@@ -11,10 +11,12 @@ on:
 # 注意：aqtinstall 3.x 的 arch 必须是完整形式 win64_msvc2019_64，不能简写成 win64。
 env:
   QT_VERSION: "6.7.1"
+  # aqtinstall 的线上包/arch 名是 win64_msvc2019_64，但本地目录会被归一化为 msvc2019_64
   QT_ARCH: "win64_msvc2019_64"
+  QT_ARCH_DIR: "msvc2019_64"
   QT_ROOT: "C:\\Qt"
-  # aqtinstall 把桌面版 Qt 装到 <root>/<ver>/<arch>/，Qt6Config.cmake 在 lib/cmake/Qt6
-  QT6_DIR: "C:\\Qt\\6.7.1\\win64_msvc2019_64\\lib\\cmake\\Qt6"
+  # 实际安装目录为 <root>/<ver>/<QT_ARCH_DIR>/，Qt6Config.cmake 在 lib/cmake/Qt6
+  QT6_DIR: "C:\\Qt\\6.7.1\\msvc2019_64\\lib\\cmake\\Qt6"
 
 jobs:
   build:
@@ -29,13 +31,13 @@ jobs:
           python -m pip install --upgrade pip aqtinstall
           python -m aqt install-qt windows desktop ${{ env.QT_VERSION }} ${{ env.QT_ARCH }} -O "$env:QT_ROOT"
           Write-Host "=== Qt cmake dir present? ==="
-          Get-ChildItem "$env:QT_ROOT/${{ env.QT_VERSION }}/${{ env.QT_ARCH }}/lib/cmake" | Select-Object Name
+          Get-ChildItem "$env:QT_ROOT/${{ env.QT_VERSION }}/${{ env.QT_ARCH_DIR }}/lib/cmake" | Select-Object Name
 
       - name: Configure
         run: cmake --preset ci
         env:
           QT6_DIR: ${{ env.QT6_DIR }}
-          CMAKE_PREFIX_PATH: ${{ env.QT_ROOT }}\${{ env.QT_VERSION }}\${{ env.QT_ARCH }}
+          CMAKE_PREFIX_PATH: ${{ env.QT_ROOT }}\${{ env.QT_VERSION }}\${{ env.QT_ARCH_DIR }}
 
       - name: Build
         run: cmake --build build --config RelWithDebInfo
