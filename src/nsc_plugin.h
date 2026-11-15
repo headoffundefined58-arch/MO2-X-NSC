@@ -63,6 +63,9 @@ public:
 
 private:
   MOBase::IOrganizer* m_Organizer;
-  bool isNscGame() const;
+  // 认领 NSC（Storm Connections）与 NS4（Ultimate Ninja STORM 4）两类实例。
+  bool isSupportedGame() const;
+  // 返回档案短名 "NSC" / "NS4"（传给 nsc_to_datawin32.py --game）。
+  QString gameShort() const;
   void runCompileBeforeRun();
 };

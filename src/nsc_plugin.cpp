@@ -192,7 +192,7 @@ unsigned int NscInstaller::priority() const
   return 100;
 }
 
-bool NscInstaller::isNscGame() const
+bool NscInstaller::isSupportedGame() const
 {
   if (!m_Organizer) {
     return false;
@@ -201,18 +201,41 @@ bool NscInstaller::isNscGame() const
   if (!game) {
     return false;
   }
-  const QString name = game->gameName();
+  const QString name = game->gameName().toUpper();
   const QString shortName = game->gameShortName();
-  if (name.contains(QStringLiteral("NARUTO"), Qt::CaseInsensitive)) {
+
+  // NSC —— NARUTO X BORUTO / Storm Connections / NSUNSC
+  if (name.contains(QStringLiteral("STORM CONNECTIONS")) ||
+      name.contains(QStringLiteral("NARUTO X BORUTO")) ||
+      shortName.compare(QStringLiteral("NSC"), Qt::CaseInsensitive) == 0) {
     return true;
   }
-  if (name.contains(QStringLiteral("Storm Connections"), Qt::CaseInsensitive)) {
-    return true;
-  }
-  if (shortName.compare(QStringLiteral("NSC"), Qt::CaseInsensitive) == 0) {
+  // NS4 —— NARUTO SHIPPUDEN Ultimate Ninja STORM 4 / NSUNS4
+  if (name.contains(QStringLiteral("STORM 4")) ||
+      name.contains(QStringLiteral("STORM4")) ||
+      shortName.compare(QStringLiteral("NS4"), Qt::CaseInsensitive) == 0) {
     return true;
   }
   return false;
+}
+
+QString NscInstaller::gameShort() const
+{
+  if (!m_Organizer) {
+    return QStringLiteral("NSC");
+  }
+  const MOBase::IPluginGame* game = m_Organizer->managedGame();
+  if (!game) {
+    return QStringLiteral("NSC");
+  }
+  const QString name = game->gameName().toUpper();
+  if (name.contains(QStringLiteral("STORM 4")) ||
+      name.contains(QStringLiteral("STORM4")) ||
+      game->gameShortName().compare(QStringLiteral("NS4"),
+                                    Qt::CaseInsensitive) == 0) {
+    return QStringLiteral("NS4");
+  }
+  return QStringLiteral("NSC");
 }
 
 std::set<QString> NscInstaller::supportedExtensions() const
@@ -243,8 +266,8 @@ MOBase::IPluginInstaller::EInstallResult NscInstaller::install(
     MOBase::GuessedValue<QString>& modName, QString /*gameName*/,
     const QString& archiveName, const QString& version, int nexusID)
 {
-  if (!isNscGame()) {
-    // 不是 NSC 实例：明确放弃，让 MO2 交给其它安装器，绝不影响其它游戏。
+  if (!isSupportedGame()) {
+    // 不是 NSC/NS4 实例：明确放弃，让 MO2 交给其它安装器，绝不影响其它游戏。
     return MOBase::IPluginInstaller::RESULT_NOTATTEMPTED;
   }
 
@@ -291,7 +314,7 @@ MOBase::IPluginInstaller::EInstallResult NscInstaller::install(
 
 void NscInstaller::runCompileBeforeRun()
 {
-  if (!isNscGame()) {
+  if (!isSupportedGame()) {
     return;
   }
 
@@ -308,7 +331,8 @@ void NscInstaller::runCompileBeforeRun()
   args << script << QStringLiteral("--base") << base
        << QStringLiteral("--profile") << m_Organizer->profileName()
        << QStringLiteral("--all-fragments") << QStringLiteral("--merge")
-       << QStringLiteral("--swap");
+       << QStringLiteral("--swap")
+       << QStringLiteral("--game") << gameShort();
 
   qDebug() << "[NscInstaller] compiling NSC mods before launch (base =" << base
            << ", profile =" << m_Organizer->profileName() << ")";
