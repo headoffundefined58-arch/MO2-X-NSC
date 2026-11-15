@@ -307,6 +307,28 @@ MOBase::IPluginInstaller::EInstallResult NscInstaller::install(
     return MOBase::IPluginInstaller::RESULT_FAILED;
   }
 
+  // 安装时即编译：把需要编译的 mod 就地编译成「成品」——
+  //   合并后的整表 + 该 mod 自己的资产，按 data_win32 相对布局铺好，
+  //   并写成 replace 布局。这样这个 mod 在 MO2 里就是成品，启用即可玩；
+  //   不做全局合并包，也不禁用源 mod。
+  const QString buildScript = toolchain + QStringLiteral("/nsc_mod_build.py");
+  if (QFileInfo(buildScript).exists()) {
+    QStringList bargs;
+    bargs << buildScript << modDir
+          << QStringLiteral("--base") << m_Organizer->basePath()
+          << QStringLiteral("--profile") << m_Organizer->profileName()
+          << QStringLiteral("--game") << gameShort();
+    qDebug() << "[NscInstaller] compiling mod in place ->" << modDir;
+    const int brc = QProcess::execute(python, withPython(python, bargs));
+    if (brc != 0) {
+      // 编译失败不阻断安装：mod 保持原始布局，内容仍在。
+      qWarning() << "[NscInstaller] nsc_mod_build.py failed, rc =" << brc
+                 << "(mod left in original layout)";
+    }
+  } else {
+    qWarning() << "[NscInstaller] build script not found:" << buildScript;
+  }
+
   // 刷新 mod 列表，让新解包出来的文件立即可见。
   m_Organizer->refresh(false);
   return MOBase::IPluginInstaller::RESULT_SUCCESS;
@@ -321,21 +343,23 @@ void NscInstaller::runCompileBeforeRun()
   const QString python = resolvePython(m_Organizer);
   const QString base = m_Organizer->basePath();
   const QString toolchain = resolveToolchainDir(m_Organizer, base);
-  const QString script = toolchain + QStringLiteral("/nsc_to_datawin32.py");
+  // 启动前只做「USVFS 目标目录预备」：USVFS 会静默丢弃目标目录不存在的映射，
+  // 而 mod 有多种内容类别（ui/message/sound/skill/effect/rpg/ia/spcload/Shaders），
+  // 每类在 data_win32 下都有各自目录，缺一个该类映射就整体失效。
+  // 注意：这里不再做全局「合并包」——编译已在安装时逐个 mod 完成。
+  const QString script = toolchain + QStringLiteral("/nsc_vfs_prepare.py");
   if (!QFileInfo(script).exists()) {
-    qWarning() << "[NscInstaller] compile script not found:" << script;
+    qWarning() << "[NscInstaller] vfs prepare script not found:" << script;
     return;
   }
 
   QStringList args;
   args << script << QStringLiteral("--base") << base
        << QStringLiteral("--profile") << m_Organizer->profileName()
-       << QStringLiteral("--all-fragments") << QStringLiteral("--merge")
-       << QStringLiteral("--swap")
        << QStringLiteral("--game") << gameShort();
 
-  qDebug() << "[NscInstaller] compiling NSC mods before launch (base =" << base
+  qDebug() << "[NscInstaller] preparing USVFS target dirs (base =" << base
            << ", profile =" << m_Organizer->profileName() << ")";
   const int rc = QProcess::execute(python, withPython(python, args));
-  qDebug() << "[NscInstaller] compile finished, rc =" << rc;
+  qDebug() << "[NscInstaller] vfs prepare finished, rc =" << rc;
 }
