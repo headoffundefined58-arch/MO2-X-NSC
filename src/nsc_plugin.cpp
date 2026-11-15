@@ -89,6 +89,14 @@ QString resolveToolchainDir(const MOBase::IOrganizer* organizer,
     }
   }
 
+  // 备选：MO2 可执行文件所在目录里的 mod-tools/nsc-mo2（mod-tools 与 ModOrganizer.exe
+  // 同级时，即使实例目录就是 MO2 根目录也能命中，无需手动配置）。
+  QString appDirCandidate = QCoreApplication::applicationDirPath() +
+                            QStringLiteral("/mod-tools/nsc-mo2");
+  if (QFileInfo(appDirCandidate).isDir()) {
+    return appDirCandidate;
+  }
+
   // 兜底：插件旁边自带的 nsc_tools。
   QString pluginsDir =
       QCoreApplication::applicationDirPath() + QStringLiteral("/plugins");
@@ -265,9 +273,6 @@ MOBase::IPluginInstaller::EInstallResult NscInstaller::install(
   const QString script = toolchain + QStringLiteral("/nsc_unpack.py");
 
   QStringList args;
-  if (isPyExe(python)) {
-    args << QStringLiteral("-3");
-  }
   args << script << archiveName << modDir;
 
   qDebug() << "[NscInstaller] unpacking" << archiveName << "->" << modDir;
@@ -298,9 +303,6 @@ void NscInstaller::runCompileBeforeRun()
   }
 
   QStringList args;
-  if (isPyExe(python)) {
-    args << QStringLiteral("-3");
-  }
   args << script << QStringLiteral("--base") << base
        << QStringLiteral("--profile") << m_Organizer->profileName()
        << QStringLiteral("--all-fragments") << QStringLiteral("--merge")
