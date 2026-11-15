@@ -5,6 +5,15 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# 直接用 aqtinstall 装 Qt，避免 jurplel/install-qt-action@v3 捆绑的旧版 aqtinstall
+# （旧版用 'qt_base' 旧命名，在 Qt 6.7.1 的包索引里查不到，会报
+#  "The packages ['qt_base'] were not found"）。最新 aqtinstall 用 'qtbase' 命名。
+env:
+  QT_VERSION: "6.7.1"
+  QT_ROOT: "C:\\Qt"
+  # aqtinstall 把桌面版 Qt 装到 <root>/<ver>/msvc2019_64/，Qt6Config.cmake 在 lib/cmake/Qt6
+  QT6_DIR: "C:\\Qt\\6.7.1\\msvc2019_64\\lib\\cmake\\Qt6"
+
 jobs:
   build:
     runs-on: windows-latest
@@ -12,21 +21,19 @@ jobs:
       - name: Checkout (uibase vendored under uibase/src, no submodule)
         uses: actions/checkout@v4
 
-      - name: Install Qt 6.7.1 (qtbase)
-        uses: jurplel/install-qt-action@v3
-        id: qt
-        with:
-          version: "6.7.1"
-          host: windows
-          target: desktop
-          arch: win64
-          # 只需要 qtbase（提供 Qt6Core 等）；插件与 versioninfo 仅依赖 QtCore。
-          modules: ""
+      - name: Install Qt ${{ env.QT_VERSION }} via aqtinstall
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip aqtinstall
+          python -m aqt install-qt windows desktop ${{ env.QT_VERSION }} win64 -O "$env:QT_ROOT"
+          Write-Host "=== installed Qt tree ==="
+          Get-ChildItem "$env:QT_ROOT" -Recurse -Depth 2 | Select-Object -First 40 FullName
 
       - name: Configure
         run: cmake --preset ci
         env:
-          QT6_DIR: ${{ steps.qt.outputs.Qt6_DIR }}
+          QT6_DIR: ${{ env.QT6_DIR }}
+          CMAKE_PREFIX_PATH: ${{ env.QT_ROOT }}\${{ env.QT_VERSION }}\msvc2019_64
 
       - name: Build
         run: cmake --build build --config RelWithDebInfo
@@ -37,6 +44,8 @@ jobs:
           New-Item -ItemType Directory -Force deploy | Out-Null
           $dll = Get-ChildItem -Recurse build -Filter nsc_plugin.dll | Select-Object -First 1
           $json = Get-ChildItem -Recurse build -Filter nsc_plugin.json | Select-Object -First 1
+          if (-not $dll) { throw "nsc_plugin.dll not found after build" }
+          if (-not $json) { throw "nsc_plugin.json not found after build" }
           Copy-Item $dll.FullName  deploy/nsc_plugin.dll
           Copy-Item $json.FullName deploy/nsc_plugin.json
           Get-ChildItem deploy
