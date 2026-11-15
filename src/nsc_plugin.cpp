@@ -132,7 +132,6 @@ NscInstaller::NscInstaller([[maybe_unused]] QObject* parent)
   // IPluginInstallerCustom 直接继承自 QObject，父对象交由插件容器管理，
   // 此处不重复转发 parent（无接受 QObject* 的基类构造函数可用）。
 }
-}
 
 bool NscInstaller::init(MOBase::IOrganizer* organizer)
 {
