@@ -8,11 +8,13 @@ on:
 # 直接用 aqtinstall 装 Qt，避免 jurplel/install-qt-action@v3 捆绑的旧版 aqtinstall
 # （旧版用 'qt_base' 旧命名，在 Qt 6.7.1 的包索引里查不到，会报
 #  "The packages ['qt_base'] were not found"）。最新 aqtinstall 用 'qtbase' 命名。
+# 注意：aqtinstall 3.x 的 arch 必须是完整形式 win64_msvc2019_64，不能简写成 win64。
 env:
   QT_VERSION: "6.7.1"
+  QT_ARCH: "win64_msvc2019_64"
   QT_ROOT: "C:\\Qt"
-  # aqtinstall 把桌面版 Qt 装到 <root>/<ver>/msvc2019_64/，Qt6Config.cmake 在 lib/cmake/Qt6
-  QT6_DIR: "C:\\Qt\\6.7.1\\msvc2019_64\\lib\\cmake\\Qt6"
+  # aqtinstall 把桌面版 Qt 装到 <root>/<ver>/<arch>/，Qt6Config.cmake 在 lib/cmake/Qt6
+  QT6_DIR: "C:\\Qt\\6.7.1\\win64_msvc2019_64\\lib\\cmake\\Qt6"
 
 jobs:
   build:
@@ -25,20 +27,15 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip aqtinstall
-          Write-Host "=== aqt list-qt windows desktop (versions) ==="
-          python -m aqt list-qt windows desktop 2>&1 | Out-String -Width 200 | Select-Object -First 40
-          Write-Host "=== aqt list-qt windows desktop ${{ env.QT_VERSION }} (arches) ==="
-          python -m aqt list-qt windows desktop ${{ env.QT_VERSION }} 2>&1 | Out-String -Width 200 | Select-Object -First 40
-          Write-Host "=== attempting install ==="
-          python -m aqt install-qt windows desktop ${{ env.QT_VERSION }} win64 -O "$env:QT_ROOT"
-          Write-Host "=== installed Qt tree ==="
-          Get-ChildItem "$env:QT_ROOT" -Recurse -Depth 2 | Select-Object -First 40 FullName
+          python -m aqt install-qt windows desktop ${{ env.QT_VERSION }} ${{ env.QT_ARCH }} -O "$env:QT_ROOT"
+          Write-Host "=== Qt cmake dir present? ==="
+          Get-ChildItem "$env:QT_ROOT/${{ env.QT_VERSION }}/${{ env.QT_ARCH }}/lib/cmake" | Select-Object Name
 
       - name: Configure
         run: cmake --preset ci
         env:
           QT6_DIR: ${{ env.QT6_DIR }}
-          CMAKE_PREFIX_PATH: ${{ env.QT_ROOT }}\${{ env.QT_VERSION }}\msvc2019_64
+          CMAKE_PREFIX_PATH: ${{ env.QT_ROOT }}\${{ env.QT_VERSION }}\${{ env.QT_ARCH }}
 
       - name: Build
         run: cmake --build build --config RelWithDebInfo
