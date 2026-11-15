@@ -1,0 +1,8 @@
+{
+  "name": "NSC Installer & Compiler",
+  "author": "Icarus",
+  "version": "1.0.0",
+  "description": "Install NSC/ENSC mods and auto-compile character/parameter merges for NARUTO X BORUTO (Storm Connections). Only active for NSC game instances.",
+  "type": "installer",
+  "enabled": true
+}

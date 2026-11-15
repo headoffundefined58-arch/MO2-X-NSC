@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 16 },
+  "configurePresets": [
+    {
+      "name": "ci",
+      "displayName": "CI (Qt6.7.1)",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_PREFIX_PATH": "$env{QT6_DIR}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ci",
+      "configurePreset": "ci",
+      "configuration": "RelWithDebInfo"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+name: Build nsc_plugin (C++ MO2 plugin)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout (uibase vendored under uibase/src, no submodule)
+        uses: actions/checkout@v4
+
+      - name: Install Qt 6.7.1 (qtbase)
+        uses: jurplel/install-qt-action@v3
+        id: qt
+        with:
+          version: "6.7.1"
+          host: windows
+          target: desktop
+          arch: win64
+          # 只需要 qtbase（提供 Qt6Core 等）；插件与 versioninfo 仅依赖 QtCore。
+          modules: ""
+
+      - name: Configure
+        run: cmake --preset ci
+        env:
+          QT6_DIR: ${{ steps.qt.outputs.Qt6_DIR }}
+
+      - name: Build
+        run: cmake --build build --config RelWithDebInfo
+
+      - name: Stage artifact (flat layout)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force deploy | Out-Null
+          $dll = Get-ChildItem -Recurse build -Filter nsc_plugin.dll | Select-Object -First 1
+          $json = Get-ChildItem -Recurse build -Filter nsc_plugin.json | Select-Object -First 1
+          Copy-Item $dll.FullName  deploy/nsc_plugin.dll
+          Copy-Item $json.FullName deploy/nsc_plugin.json
+          Get-ChildItem deploy
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nsc_plugin
+          path: |
+            deploy/nsc_plugin.dll
+            deploy/nsc_plugin.json
