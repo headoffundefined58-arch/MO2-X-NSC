@@ -25,7 +25,11 @@
  * 隔离：只在 NARUTO X BORUTO / Storm Connections / NSC 游戏实例认领与操作，
  * 不影响其他游戏（Skyrim / Fallout 等）的 MOD 管理。
  */
-class NscInstaller : public QObject, public MOBase::IPluginInstallerCustom
+// 注意：只继承 IPluginInstallerCustom，不要再写 public QObject。因为
+// IPluginInstallerCustom 自身已经 public 继承 QObject（见 uibase iplugininstallercustom.h），
+// 重复写 QObject 会形成菱形继承，导致 moc 生成的 static_cast<QObject*> 二义（C2594）。
+// Q_OBJECT 通过接口间接继承 QObject 仍可正常工作。
+class NscInstaller : public MOBase::IPluginInstallerCustom
 {
   Q_OBJECT
   Q_INTERFACES(MOBase::IPlugin MOBase::IPluginInstaller MOBase::IPluginInstallerCustom)
