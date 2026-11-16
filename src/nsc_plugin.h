@@ -61,6 +61,10 @@ public:
                                                    const QString& version,
                                                    int nexusID) override;
 
+  // 安装流程结束（无论哪个安装器干的活）——这是「装完即编译」的可靠挂点。
+  void onInstallationEnd(MOBase::IPluginInstaller::EInstallResult result,
+                         MOBase::IModInterface* newMod) override;
+
 private:
   MOBase::IOrganizer* m_Organizer;
   // 认领 NSC（Storm Connections）与 NS4（Ultimate Ninja STORM 4）两类实例。
@@ -68,4 +72,9 @@ private:
   // 返回档案短名 "NSC" / "NS4"（传给 nsc_to_datawin32.py --game）。
   QString gameShort() const;
   void runCompileBeforeRun();
+  // 把单个 mod 目录就地编译成成品（已编译过则直接返回 true）。
+  bool compileModInPlace(const QString& modDir);
+  // mod 目录是否像一个「原样解包的 NSC 包」（需要编译的那种）。
+  static bool looksLikeNscPackage(const QString& modDir);
+  static void logLine(const QString& message);
 };

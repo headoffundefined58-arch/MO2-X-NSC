@@ -15,11 +15,14 @@
 #include "nsc_plugin.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QStringList>
+#include <QTextStream>
 #include <QDebug>
 
 #include "versioninfo.h"
@@ -118,10 +121,48 @@ QStringList withPython(const QString& python, QStringList args)
   return args;
 }
 
-bool isPyExe(const QString& python)
+// 原样解包的 NSC 包形状：mod_config.ini / Characters/ / Resources/Files/ / moddingapi/
+// （服装、改色这类散装 mod 是 spc/ ui/ sound/ 布局，不需要编译，别去碰它们。）
+bool dirLooksLikeNscPackage(const QString& modDir)
 {
-  return QFileInfo(python).fileName().compare(QStringLiteral("py.exe"),
-                                             Qt::CaseInsensitive) == 0;
+  const QDir d(modDir);
+  if (!d.exists()) {
+    return false;
+  }
+  return QFileInfo(d.filePath(QStringLiteral("mod_config.ini"))).isFile()
+      || QFileInfo(d.filePath(QStringLiteral("Characters"))).isDir()
+      || QFileInfo(d.filePath(QStringLiteral("Resources/Files"))).isDir()
+      || QFileInfo(d.filePath(QStringLiteral("moddingapi"))).isDir();
+}
+
+// 归档树版本的同一判定（MO2 会在解包前用 IFileTree 问「这个归档归你吗」）。
+bool treeLooksLikeNscPackage(const std::shared_ptr<const MOBase::IFileTree>& tree)
+{
+  using MOBase::FileTreeEntry;
+  auto has = [&tree](const QString& path, FileTreeEntry::FileTypes t) {
+    return tree->exists(path, t);
+  };
+  auto atRoot = [&has]() {
+    return has(QStringLiteral("mod_config.ini"), FileTreeEntry::FILE)
+        || has(QStringLiteral("Characters"), FileTreeEntry::DIRECTORY)
+        || has(QStringLiteral("Resources/Files"), FileTreeEntry::DIRECTORY)
+        || has(QStringLiteral("moddingapi"), FileTreeEntry::DIRECTORY);
+  };
+  if (atRoot()) {
+    return true;
+  }
+  // 有些包把所有内容再套一层目录（Foo/Characters/...）：看一层子目录。
+  for (std::size_t i = 0; i < tree->size(); ++i) {
+    auto entry = tree->at(i);
+    if (!entry || !entry->isDir()) {
+      continue;
+    }
+    auto sub = tree->findDirectory(entry->name());
+    if (sub && treeLooksLikeNscPackage(sub)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -140,13 +181,40 @@ bool NscInstaller::init(MOBase::IOrganizer* organizer)
     return false;
   }
 
-  // 启动游戏前（MO2 空闲、VFS 尚未计算）触发一次编译合并。回调里会先做游戏隔离判断。
+  logLine(QStringLiteral("init: game=%1 short=%2 supported=%3 base=%4")
+              .arg(m_Organizer->managedGame() ? m_Organizer->managedGame()->gameName()
+                                              : QStringLiteral("<none>"))
+              .arg(gameShort())
+              .arg(isSupportedGame() ? QStringLiteral("yes") : QStringLiteral("no"))
+              .arg(m_Organizer->basePath()));
+
+  // 启动游戏前（MO2 空闲、VFS 尚未计算）跑一遍：把还没编译的 NSC 包就地编译成成品，
+  // 再预建 USVFS 目标目录。回调里会先做游戏隔离判断。
   m_Organizer->onAboutToRun([this](const QString&) -> bool {
     runCompileBeforeRun();
     return true;  // 永远允许启动
   });
 
   return true;
+}
+
+void NscInstaller::logLine(const QString& message)
+{
+  qDebug() << "[NscInstaller]" << message;
+
+  const QString path = QCoreApplication::applicationDirPath() +
+                       QStringLiteral("/plugins/nsc_plugin.log");
+  QFileInfo fi(path);
+  if (fi.exists() && fi.size() > 1 << 20) {   // 1 MB 上限，超了就重开
+    QFile::remove(path);
+  }
+  QFile f(path);
+  if (!f.open(QIODevice::Append | QIODevice::Text)) {
+    return;
+  }
+  QTextStream out(&f);
+  out << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))
+      << "  " << message << "\n";
 }
 
 QString NscInstaller::name() const
@@ -256,14 +324,20 @@ bool NscInstaller::isArchiveSupported(const QString& archiveName) const
 bool NscInstaller::isArchiveSupported(
     std::shared_ptr<const MOBase::IFileTree> tree) const
 {
-  // MO2 2.5.2 实际用这个 IFileTree 重载判定归档归属，而不是字符串重载。
-  // .nsc/.ensc 本质是 zip，MO2 能解开 → 之前这里恒返回 false，导致归档被 Simple Installer
-  // 抢走、install() 从不执行 → 安装时不编译。改为按归档名扩展名认领。
+  // MO2 2.5.2 实际用这个 IFileTree 重载判定归档归属（.nsc 本质是 zip，MO2 能自己解开）。
+  // 以前靠 tree->name() 判后缀——但归档树的根节点没有文件名，恒 false，于是归档被
+  // Simple Installer 抢走、install() 从不执行。改成按「包内结构」认领。
   if (!tree) {
     return false;
   }
-  const QString archiveName = tree->name();
-  const QString ext = QFileInfo(archiveName).suffix().toLower();
+  if (!isSupportedGame()) {
+    return false;   // 别的游戏实例完全不管
+  }
+  if (treeLooksLikeNscPackage(tree)) {
+    return true;
+  }
+  // 兜底：某些调用路径下树根名字就是归档名。
+  const QString ext = QFileInfo(tree->name()).suffix().toLower();
   return kNscExtensions.contains(ext);
 }
 
@@ -306,37 +380,78 @@ MOBase::IPluginInstaller::EInstallResult NscInstaller::install(
   args << script << archiveName << modDir;
 
   qDebug() << "[NscInstaller] unpacking" << archiveName << "->" << modDir;
+  logLine(QStringLiteral("install: %1 -> %2").arg(archiveName, modDir));
   const int rc = QProcess::execute(python, withPython(python, args));
   if (rc != 0) {
+    logLine(QStringLiteral("nsc_unpack.py failed, rc=%1").arg(rc));
     qWarning() << "[NscInstaller] nsc_unpack.py failed, rc =" << rc;
     return MOBase::IPluginInstaller::RESULT_FAILED;
   }
 
   // 安装时即编译：把需要编译的 mod 就地编译成「成品」——
-  //   合并后的整表 + 该 mod 自己的资产，按 data_win32 相对布局铺好，
-  //   并写成 replace 布局。这样这个 mod 在 MO2 里就是成品，启用即可玩；
-  //   不做全局合并包，也不禁用源 mod。
-  const QString buildScript = toolchain + QStringLiteral("/nsc_mod_build.py");
-  if (QFileInfo(buildScript).exists()) {
-    QStringList bargs;
-    bargs << buildScript << modDir
-          << QStringLiteral("--base") << m_Organizer->basePath()
-          << QStringLiteral("--profile") << m_Organizer->profileName()
-          << QStringLiteral("--game") << gameShort();
-    qDebug() << "[NscInstaller] compiling mod in place ->" << modDir;
-    const int brc = QProcess::execute(python, withPython(python, bargs));
-    if (brc != 0) {
-      // 编译失败不阻断安装：mod 保持原始布局，内容仍在。
-      qWarning() << "[NscInstaller] nsc_mod_build.py failed, rc =" << brc
-                 << "(mod left in original layout)";
-    }
-  } else {
-    qWarning() << "[NscInstaller] build script not found:" << buildScript;
-  }
+  //   合并后的整表 + 该 mod 自己的资产，按 data_win32 相对布局铺好。
+  //   这个 mod 在 MO2 里就是成品，启用即可玩；不做全局合并包，也不禁用源 mod。
+  compileModInPlace(modDir);
 
   // 刷新 mod 列表，让新解包出来的文件立即可见。
   m_Organizer->refresh(false);
   return MOBase::IPluginInstaller::RESULT_SUCCESS;
+}
+
+void NscInstaller::onInstallationEnd(MOBase::IPluginInstaller::EInstallResult result,
+                                     MOBase::IModInterface* newMod)
+{
+  // 不管归档最后是哪个安装器处理的（我们的 / Simple / BAIN / FOMOD……），装完都在这儿收尾：
+  // 只要是原样解包的 NSC 包，就地编译成成品。这是「装完即编译」最可靠的挂点。
+  if (result != MOBase::IPluginInstaller::RESULT_SUCCESS || !newMod) {
+    return;
+  }
+  if (!isSupportedGame()) {
+    return;
+  }
+  const QString modDir = newMod->absolutePath();
+  logLine(QStringLiteral("installation finished: %1 -> %2").arg(newMod->name(), modDir));
+  compileModInPlace(modDir);
+}
+
+bool NscInstaller::compileModInPlace(const QString& modDir)
+{
+  if (!m_Organizer) {
+    return false;
+  }
+  if (QFileInfo(QDir(modDir).filePath(QStringLiteral(".nsc_compiled"))).isFile()) {
+    logLine(QStringLiteral("already compiled: ") + modDir);
+    return true;
+  }
+  if (!dirLooksLikeNscPackage(modDir)) {
+    logLine(QStringLiteral("skip (not an NSC package): ") + modDir);
+    return false;
+  }
+
+  const QString python = resolvePython(m_Organizer);
+  const QString toolchain =
+      resolveToolchainDir(m_Organizer, m_Organizer->basePath());
+  const QString buildScript = toolchain + QStringLiteral("/nsc_mod_build.py");
+  if (!QFileInfo(buildScript).isFile()) {
+    logLine(QStringLiteral("build script not found: ") + buildScript);
+    return false;
+  }
+
+  QStringList bargs;
+  bargs << buildScript << modDir
+        << QStringLiteral("--base") << m_Organizer->basePath()
+        << QStringLiteral("--profile") << m_Organizer->profileName()
+        << QStringLiteral("--game") << gameShort();
+  logLine(QStringLiteral("compile: %1 %2").arg(python, bargs.join(QLatin1Char(' '))));
+  const int brc = QProcess::execute(python, withPython(python, bargs));
+  if (brc != 0) {
+    // 编译失败不阻断安装：mod 保持原始布局，内容仍在。
+    logLine(QStringLiteral("compile failed, rc=%1 (mod left in original layout)").arg(brc));
+    qWarning() << "[NscInstaller] nsc_mod_build.py failed, rc =" << brc;
+    return false;
+  }
+  logLine(QStringLiteral("compiled OK: ") + modDir);
+  return true;
 }
 
 void NscInstaller::runCompileBeforeRun()
@@ -348,10 +463,10 @@ void NscInstaller::runCompileBeforeRun()
   const QString python = resolvePython(m_Organizer);
   const QString base = m_Organizer->basePath();
   const QString toolchain = resolveToolchainDir(m_Organizer, base);
-  // 启动前只做「USVFS 目标目录预备」：USVFS 会静默丢弃目标目录不存在的映射，
-  // 而 mod 有多种内容类别（ui/message/sound/skill/effect/rpg/ia/spcload/Shaders），
-  // 每类在 data_win32 下都有各自目录，缺一个该类映射就整体失效。
-  // 注意：这里不再做全局「合并包」——编译已在安装时逐个 mod 完成。
+  // 启动前：(1) 扫一遍还没编译的 NSC 包并就地编译成成品（安装器钩子没兜住的情况，
+  // 以及手工拷进 mods/ 的包）；(2) 预建 USVFS 目标目录——USVFS 会静默丢弃目标目录
+  // 不存在的映射，而 mod 有多种内容类别（ui/message/sound/skill/effect/rpg/ia/spcload/
+  // Shaders），每类在 data_win32 下都有各自目录，缺一个该类映射就整体失效。
   const QString script = toolchain + QStringLiteral("/nsc_vfs_prepare.py");
   if (!QFileInfo(script).exists()) {
     qWarning() << "[NscInstaller] vfs prepare script not found:" << script;
@@ -365,6 +480,9 @@ void NscInstaller::runCompileBeforeRun()
 
   qDebug() << "[NscInstaller] preparing USVFS target dirs (base =" << base
            << ", profile =" << m_Organizer->profileName() << ")";
+  logLine(QStringLiteral("before-run: vfs prepare + sweep (profile=%1)")
+              .arg(m_Organizer->profileName()));
   const int rc = QProcess::execute(python, withPython(python, args));
+  logLine(QStringLiteral("before-run: finished, rc=%1").arg(rc));
   qDebug() << "[NscInstaller] vfs prepare finished, rc =" << rc;
 }
