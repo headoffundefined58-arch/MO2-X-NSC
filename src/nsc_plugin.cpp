@@ -136,19 +136,28 @@ bool dirLooksLikeNscPackage(const QString& modDir)
 }
 
 // 归档树版本的同一判定（MO2 会在解包前用 IFileTree 问「这个归档归你吗」）。
+//
+// 注意：只能用 IFileTree 的**内联/虚**接口（size/at/name/isDir/astree）。
+// exists() / find() / findDirectory() 是非虚的内联声明但定义在 uibase.dll 里，
+// 本插件不链接 uibase.lib（见 CMakeLists 注释），一调用就是 LNK2019。
+bool treeHasEntry(const std::shared_ptr<const MOBase::IFileTree>& tree,
+                  const QString& name)
+{
+  for (std::size_t i = 0; i < tree->size(); ++i) {
+    auto entry = tree->at(i);
+    if (entry && entry->name().compare(name, Qt::CaseInsensitive) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool treeLooksLikeNscPackage(const std::shared_ptr<const MOBase::IFileTree>& tree)
 {
-  using MOBase::FileTreeEntry;
-  auto has = [&tree](const QString& path, FileTreeEntry::FileTypes t) {
-    return tree->exists(path, t);
-  };
-  auto atRoot = [&has]() {
-    return has(QStringLiteral("mod_config.ini"), FileTreeEntry::FILE)
-        || has(QStringLiteral("Characters"), FileTreeEntry::DIRECTORY)
-        || has(QStringLiteral("Resources/Files"), FileTreeEntry::DIRECTORY)
-        || has(QStringLiteral("moddingapi"), FileTreeEntry::DIRECTORY);
-  };
-  if (atRoot()) {
+  if (treeHasEntry(tree, QStringLiteral("mod_config.ini")) ||
+      treeHasEntry(tree, QStringLiteral("Characters")) ||
+      treeHasEntry(tree, QStringLiteral("Resources")) ||
+      treeHasEntry(tree, QStringLiteral("moddingapi"))) {
     return true;
   }
   // 有些包把所有内容再套一层目录（Foo/Characters/...）：看一层子目录。
@@ -157,7 +166,7 @@ bool treeLooksLikeNscPackage(const std::shared_ptr<const MOBase::IFileTree>& tre
     if (!entry || !entry->isDir()) {
       continue;
     }
-    auto sub = tree->findDirectory(entry->name());
+    auto sub = entry->astree();
     if (sub && treeLooksLikeNscPackage(sub)) {
       return true;
     }
@@ -205,7 +214,7 @@ void NscInstaller::logLine(const QString& message)
   const QString path = QCoreApplication::applicationDirPath() +
                        QStringLiteral("/plugins/nsc_plugin.log");
   QFileInfo fi(path);
-  if (fi.exists() && fi.size() > 1 << 20) {   // 1 MB 上限，超了就重开
+  if (fi.exists() && fi.size() > (1 << 20)) {   // 1 MB 上限，超了就重开
     QFile::remove(path);
   }
   QFile f(path);

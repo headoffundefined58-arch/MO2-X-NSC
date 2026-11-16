@@ -74,7 +74,5 @@ private:
   void runCompileBeforeRun();
   // 把单个 mod 目录就地编译成成品（已编译过则直接返回 true）。
   bool compileModInPlace(const QString& modDir);
-  // mod 目录是否像一个「原样解包的 NSC 包」（需要编译的那种）。
-  static bool looksLikeNscPackage(const QString& modDir);
   static void logLine(const QString& message);
 };

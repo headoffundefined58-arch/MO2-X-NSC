@@ -46,7 +46,28 @@ jobs:
           CMAKE_PREFIX_PATH: ${{ env.QT_ROOT }}\${{ env.QT_VERSION }}\${{ env.QT_ARCH_DIR }}
 
       - name: Build
-        run: cmake --build build --config RelWithDebInfo
+        shell: pwsh
+        run: |
+          cmake --build build --config RelWithDebInfo 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # 构建失败时把编译输出挂到 release 上（Actions 日志要认证才能下载，
+      # release 资产不用，本机可以直接拉下来看报错）。
+      - name: Publish build log on failure
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "ci-latest"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "CI latest build" --notes "Automated build"
+          }
+          if (Test-Path build.log) {
+            Copy-Item build.log deploy-build.log
+            gh release upload $tag deploy-build.log --clobber
+          }
 
       - name: Stage artifact (flat layout)
         shell: pwsh
