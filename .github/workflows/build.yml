@@ -5,10 +5,16 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-# 直接用 aqtinstall 装 Qt，避免 jurplel/install-qt-action@v3 捆绑的旧版 aqtinstall
-# （旧版用 'qt_base' 旧命名，在 Qt 6.7.1 的包索引里查不到，会报
-#  "The packages ['qt_base'] were not found"）。最新 aqtinstall 用 'qtbase' 命名。
-# 注意：aqtinstall 3.x 的 arch 必须是完整形式 win64_msvc2019_64，不能简写成 win64。
+  # 直接用 aqtinstall 装 Qt，避免 jurplel/install-qt-action@v3 捆绑的旧版 aqtinstall
+  # （旧版用 'qt_base' 旧命名，在 Qt 6.7.1 的包索引里查不到，会报
+  #  "The packages ['qt_base'] were not found"）。最新 aqtinstall 用 'qtbase' 命名。
+  # 注意：aqtinstall 3.x 的 arch 必须是完整形式 win64_msvc2019_64，不能简写成 win64。
+
+# 把产物挂到 ci-latest 这个 release 上：release 资产可以在「不带 token」的情况下
+# 从命令行下载（actions artifact 必须要认证），这样本机部署脚本能直接拉 DLL。
+permissions:
+  contents: write
+
 env:
   QT_VERSION: "6.7.1"
   # aqtinstall 的线上包/arch 名是 win64_msvc2019_64，但本地目录会被归一化为 msvc2019_64
@@ -61,3 +67,18 @@ jobs:
           path: |
             deploy/nsc_plugin.dll
             deploy/nsc_plugin.json
+
+      # 公开 release 资产 = 无需 token 的下载通道（本机部署脚本用这个）。
+      - name: Publish to ci-latest release
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "ci-latest"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "CI latest build" --notes "Automated build of nsc_plugin.dll (${{ github.sha }})"
+          }
+          gh release upload $tag deploy/nsc_plugin.dll deploy/nsc_plugin.json --clobber
+          Write-Host "published to release $tag"
