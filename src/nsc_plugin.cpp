@@ -135,45 +135,6 @@ bool dirLooksLikeNscPackage(const QString& modDir)
       || QFileInfo(d.filePath(QStringLiteral("moddingapi"))).isDir();
 }
 
-// 归档树版本的同一判定（MO2 会在解包前用 IFileTree 问「这个归档归你吗」）。
-//
-// 注意：只能用 IFileTree 的**内联/虚**接口（size/at/name/isDir/astree）。
-// exists() / find() / findDirectory() 是非虚的内联声明但定义在 uibase.dll 里，
-// 本插件不链接 uibase.lib（见 CMakeLists 注释），一调用就是 LNK2019。
-bool treeHasEntry(const std::shared_ptr<const MOBase::IFileTree>& tree,
-                  const QString& name)
-{
-  for (std::size_t i = 0; i < tree->size(); ++i) {
-    auto entry = tree->at(i);
-    if (entry && entry->name().compare(name, Qt::CaseInsensitive) == 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool treeLooksLikeNscPackage(const std::shared_ptr<const MOBase::IFileTree>& tree)
-{
-  if (treeHasEntry(tree, QStringLiteral("mod_config.ini")) ||
-      treeHasEntry(tree, QStringLiteral("Characters")) ||
-      treeHasEntry(tree, QStringLiteral("Resources")) ||
-      treeHasEntry(tree, QStringLiteral("moddingapi"))) {
-    return true;
-  }
-  // 有些包把所有内容再套一层目录（Foo/Characters/...）：看一层子目录。
-  for (std::size_t i = 0; i < tree->size(); ++i) {
-    auto entry = tree->at(i);
-    if (!entry || !entry->isDir()) {
-      continue;
-    }
-    auto sub = entry->astree();
-    if (sub && treeLooksLikeNscPackage(sub)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 }  // namespace
 
 NscInstaller::NscInstaller([[maybe_unused]] QObject* parent)
@@ -265,7 +226,7 @@ QList<MOBase::PluginSetting> NscInstaller::settings() const
 
 unsigned int NscInstaller::priority() const
 {
-  // 高于默认安装器，确保我们的扩展名被我们认领。
+  // 只在「归档打不开、只拿到文件名」的那条路径上起作用（那时我们会认领扩展名）。
   return 100;
 }
 
@@ -330,24 +291,21 @@ bool NscInstaller::isArchiveSupported(const QString& archiveName) const
   return kNscExtensions.contains(ext);
 }
 
+// 归档树版本的认领判定：**故意返回 false**。
+//
+// 想按「包内结构」认领（Characters/、mod_config.ini……）就必须遍历 IFileTree，而
+// IFileTree::size()/at()/begin() 全部内联转发到 `entries()`——它是**非虚**函数、
+// 定义在 uibase.dll 里、没有导出到我们手上（本插件不链接 uibase.lib，见 CMakeLists）。
+// 一调用就是 LNK2019（实测：unresolved external ... entries@IFileTree@MOBase）。
+//
+// 所以不跟 Simple Installer 抢归档：让 MO2 自己解开（.nsc 就是 zip），装完由
+// onInstallationEnd 就地编译；万一 MO2 没通知到，启动前的 sweep 还会兜一次。
+// 字符串重载（能拿到归档文件名）仍然认领扩展名，覆盖「不是 zip、MO2 打不开」的包。
 bool NscInstaller::isArchiveSupported(
     std::shared_ptr<const MOBase::IFileTree> tree) const
 {
-  // MO2 2.5.2 实际用这个 IFileTree 重载判定归档归属（.nsc 本质是 zip，MO2 能自己解开）。
-  // 以前靠 tree->name() 判后缀——但归档树的根节点没有文件名，恒 false，于是归档被
-  // Simple Installer 抢走、install() 从不执行。改成按「包内结构」认领。
-  if (!tree) {
-    return false;
-  }
-  if (!isSupportedGame()) {
-    return false;   // 别的游戏实例完全不管
-  }
-  if (treeLooksLikeNscPackage(tree)) {
-    return true;
-  }
-  // 兜底：某些调用路径下树根名字就是归档名。
-  const QString ext = QFileInfo(tree->name()).suffix().toLower();
-  return kNscExtensions.contains(ext);
+  Q_UNUSED(tree);
+  return false;
 }
 
 MOBase::IPluginInstaller::EInstallResult NscInstaller::install(
