@@ -254,12 +254,17 @@ bool NscInstaller::isArchiveSupported(const QString& archiveName) const
 }
 
 bool NscInstaller::isArchiveSupported(
-    std::shared_ptr<const MOBase::IFileTree> /*tree*/) const
+    std::shared_ptr<const MOBase::IFileTree> tree) const
 {
-  // 自定义 .nsc 容器一般不是标准 zip，MO2 打不开 → 会走上面的 filename 变体（我们认领）。
-  // 万一 MO2 能打开，退回默认安装器即可（编译阶段靠扫描全局表仍会纳入），故这里保守返回
-  // false，避免误吞其它归档。
-  return false;
+  // MO2 2.5.2 实际用这个 IFileTree 重载判定归档归属，而不是字符串重载。
+  // .nsc/.ensc 本质是 zip，MO2 能解开 → 之前这里恒返回 false，导致归档被 Simple Installer
+  // 抢走、install() 从不执行 → 安装时不编译。改为按归档名扩展名认领。
+  if (!tree) {
+    return false;
+  }
+  const QString archiveName = tree->name();
+  const QString ext = QFileInfo(archiveName).suffix().toLower();
+  return kNscExtensions.contains(ext);
 }
 
 MOBase::IPluginInstaller::EInstallResult NscInstaller::install(
