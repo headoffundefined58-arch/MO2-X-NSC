@@ -374,6 +374,30 @@ void NscInstaller::onInstallationEnd(MOBase::IPluginInstaller::EInstallResult re
   }
   const QString modDir = newMod->absolutePath();
   logLine(QStringLiteral("installation finished: %1 -> %2").arg(newMod->name(), modDir));
+
+  // 【2026-11-19 修复】MO2 的 Simple installer 只解最外层 zip；包内若还套着
+  // .nsc/.ensc/.zip 容器（如「Naruto - Kurama Chakra Mode」里就是一个 33MB 的
+  // .nsc），mod 根会只剩这个容器文件。此前这里直接调 compileModInPlace，
+  // dirLooksLikeNscPackage 认不出 → 打印 "skip (not an NSC package)" 就走了，
+  // 容器永远不被展开。现按 install() 的路径补齐：先循环展开嵌套归档 + 布局
+  // 归一化，再判断是否编译。before-run 里也有同样的 sweep 作兜底，但那要等
+  // 下次启动；安装当场展开才能真正做到「装完即用」。
+  const QString backup = layoutBackupRoot();
+  const QStringList nested = nsc::Prepare::expandNested(modDir, backup);
+  for (const QString& n : nested) {
+    logLine(QStringLiteral("  installation: nested ") + n);
+  }
+  if (!nested.isEmpty()) {
+    const QStringList acts = nsc::Layout::normalizeOne(modDir, backup);
+    for (const QString& a : acts.mid(0, 12)) {
+      logLine(QStringLiteral("  installation: layout ") + a);
+    }
+    // 让新展开出来的文件立刻在 MO2 里可见（vfs/冲突视图依赖这层刷新）。
+    if (m_Organizer) {
+      m_Organizer->refresh(false);
+    }
+  }
+
   compileModInPlace(modDir);
 }
 
