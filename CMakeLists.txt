@@ -33,14 +33,22 @@ target_link_libraries(nsc_versioninfo PUBLIC Qt6::Core)
 # 我们的插件（MODULE = 无 main 的共享库，MO2 用 QPluginLoader 动态加载）。
 add_library(nsc_plugin MODULE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_plugin.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_plugin.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_plugin.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_arc.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_arc.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_layout.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_layout.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_prepare.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_prepare.cpp")
 target_include_directories(nsc_plugin PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/uibase/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/uibase/src/game_features"
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
 # 同样定义 _NODLL，保证插件看到的 VersionInfo 符号与静态库一致（普通符号，非 dllimport）。
 target_compile_definitions(nsc_plugin PRIVATE _NODLL)
-target_link_libraries(nsc_plugin PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets nsc_versioninfo)
+# nsc_arc.cpp 用 7-Zip COM 接口（PROPVARIANT / SysFreeString），需要 ole32/oleaut32。
+target_link_libraries(nsc_plugin PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets nsc_versioninfo
+    ole32 oleaut32)
 set_target_properties(nsc_plugin PROPERTIES
     PREFIX ""
     OUTPUT_NAME "nsc_plugin"

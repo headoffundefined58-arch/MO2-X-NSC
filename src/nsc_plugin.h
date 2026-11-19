@@ -18,9 +18,10 @@
  *
  * 职责（独立于 Python 插件框架）：
  *  1. 安装：通过 IPluginInstallerCustom 认领 .nsc/.ensc/.uns/.unse/.nus4，
- *     在 install() 里创建 MO2 mod 并调用独立的 nsc_unpack.py 完成归档解包。
- *  2. 编译合并：在 onAboutToRun（启动游戏前，MO2 完全空闲）钩子里调用已验证的
- *     nsc_to_datawin32.py 合并带碎片全局参数表的 mod，并原子改写 modlist。
+ *     在 install() 里创建 MO2 mod，用原生 7z.dll 解包 + 布局归一化（零 Python）。
+ *  2. 启动前准备：在 onAboutToRun（MO2 完全空闲）里做嵌套归档展开、布局归一化、
+ *     VFS 目录预建，全部原生 C++；仅「合并全局表/合成 CPK」这步仍调 Python
+ *     编排官方 .NET 编译器（依赖外部工具链）。
  *
  * 隔离：只在 NARUTO X BORUTO / Storm Connections / NSC 游戏实例认领与操作，
  * 不影响其他游戏（Skyrim / Fallout 等）的 MOD 管理。
@@ -72,7 +73,15 @@ private:
   // 返回档案短名 "NSC" / "NS4"（传给 nsc_to_datawin32.py --game）。
   QString gameShort() const;
   void runCompileBeforeRun();
+  /// 游戏根路径（managedGame()->gameDirectory()），失败返回空串。
+  QString gameRootPath() const;
+  /// 备份根（布局归一化时冲突文件挪这里，不硬删）。
+  QString layoutBackupRoot() const;
+  /// 把单个 mod 目录就地解包+布局归一化（纯 C++，替代 nsc_unpack.py）。
+  /// 返回 false 表示归档解不开。
+  bool unpackMod(const QString& archiveName, const QString& modDir);
   // 把单个 mod 目录就地编译成成品（已编译过则直接返回 true）。
+  // 这是唯一还需要 Python 的一步：调官方 .NET 编译器合并全局表。
   bool compileModInPlace(const QString& modDir);
   static void logLine(const QString& message);
 };
