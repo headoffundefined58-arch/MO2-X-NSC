@@ -236,7 +236,8 @@ public:
   {
   }
 
-  ~ExtractSink() override { closeCurrent(); }
+  // COM 接口基类没有虚析构函数，不能加 override；由 Release() 管理生命周期。
+  ~ExtractSink() { closeCurrent(); }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** ppv) override
   {
