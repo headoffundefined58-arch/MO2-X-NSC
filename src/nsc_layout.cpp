@@ -311,6 +311,26 @@ int stripWrapper(const QString& modDir, const QString& stashDir,
       }
     }
     if (candidate.isEmpty()) {
+      // 【2026-11-22 安装实测】MO2 先解外层 zip、我们随后展开里面的 .nsc，
+      // 此时 mod 根可能同时有刚展开出来的 Characters/Resources 和上一次安装
+      // 残留的单一头文件夹（如 Naruto (Kurama Chakra Mode)/）。tops.size()!=1
+      // 会让上面的分支失效，头文件夹永远剥不掉。这里按"内容判据"找头文件夹：
+      // 凡是自身含 Characters/Models/moddingapi 或 Resources/Files 的顶层目录，
+      // 且名字不是已知内容目录，就当作包壳并入 mod 根。
+      for (const QString& top : tops) {
+        const QString name = QFileInfo(top).fileName();
+        if (kWrappers.contains(name, Qt::CaseInsensitive)) {
+          continue;  // data_win32 上面已处理
+        }
+        const bool headerLike = hasPackageMarker(top) ||
+            QFileInfo(joinPath(top, QStringLiteral("Resources/Files"))).isDir();
+        if (headerLike) {
+          candidate = top;
+          break;
+        }
+      }
+    }
+    if (candidate.isEmpty()) {
       break;
     }
     if (QDir(candidate).entryList(QDir::NoDotAndDotDot | QDir::Hidden).isEmpty()) {
