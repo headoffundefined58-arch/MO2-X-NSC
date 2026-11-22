@@ -167,6 +167,24 @@ void collectDirs(const QString& root, QStringList& out)
   }
 }
 
+/// 递归查找任意深度的 data_win32 包壳（用户明确要求：压缩包里
+/// naruto/data_win32/spc，安装后只要 spc）。返回相对 mod 根最浅的那个。
+QString findDataWin32Wrapper(const QString& modDir)
+{
+  QStringList dirs;
+  collectDirs(modDir, dirs);
+  std::sort(dirs.begin(), dirs.end(), [](const QString& a, const QString& b) {
+    return a.count(QLatin1Char('/')) < b.count(QLatin1Char('/'));
+  });
+  for (const QString& dir : dirs) {
+    if (QFileInfo(dir).fileName().compare(QStringLiteral("data_win32"),
+                                          Qt::CaseInsensitive) == 0) {
+      return dir;
+    }
+  }
+  return QString();
+}
+
 void removeEmptyTree(const QString& path)
 {
   const QFileInfoList subs =
@@ -279,6 +297,17 @@ int stripWrapper(const QString& modDir, const QString& stashDir,
       if (complete &&
           !QDir(chain).entryList(QDir::NoDotAndDotDot | QDir::Hidden).isEmpty()) {
         candidate = chain;
+      }
+    }
+    if (candidate.isEmpty() && !isPackage) {
+      // 用户明确要求：头文件夹嵌套的 data_win32 也要剥。
+      // 例如压缩包是 naruto/data_win32/spc，安装后只留 spc（data_win32 里的内容
+      // 直接提到 mod 根）。上面的 kAssetChain 只认 Resources/Files/data，覆盖
+      // 不到「xxx/data_win32/」这种包壳，这里递归兜底。
+      const QString nested = findDataWin32Wrapper(modDir);
+      if (!nested.isEmpty() &&
+          !QDir(nested).entryList(QDir::NoDotAndDotDot | QDir::Hidden).isEmpty()) {
+        candidate = nested;
       }
     }
     if (candidate.isEmpty()) {

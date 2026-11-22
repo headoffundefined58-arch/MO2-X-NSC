@@ -418,7 +418,10 @@ bool NscInstaller::compileModInPlace(const QString& modDir)
   const QString python = resolvePython(m_Organizer);
   const QString toolchain =
       resolveToolchainDir(m_Organizer, m_Organizer->basePath());
-  const QString buildScript = toolchain + QStringLiteral("/nsc_mod_build.py");
+  // 安装期成品化：识别是否需要编译，需要则当场编译，把资产 CPK 放进该 mod
+  // 自己的 moddingapi/mods/<mod名>/；全局名册表留给启动期共享编译。
+  // 旧 nsc_mod_build.py 已废弃（main 是 no-op），改用 nsc_install_build.py。
+  const QString buildScript = toolchain + QStringLiteral("/nsc_install_build.py");
   if (!QFileInfo(buildScript).isFile()) {
     logLine(QStringLiteral("build script not found: ") + buildScript);
     return false;
@@ -434,7 +437,7 @@ bool NscInstaller::compileModInPlace(const QString& modDir)
   if (brc != 0) {
     // 编译失败不阻断安装：mod 保持原始布局，内容仍在。
     logLine(QStringLiteral("compile failed, rc=%1 (mod left in original layout)").arg(brc));
-    qWarning() << "[NscInstaller] nsc_mod_build.py failed, rc =" << brc;
+    qWarning() << "[NscInstaller] nsc_install_build.py failed, rc =" << brc;
     return false;
   }
   logLine(QStringLiteral("compiled OK: ") + modDir);
