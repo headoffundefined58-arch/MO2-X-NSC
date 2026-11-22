@@ -387,11 +387,18 @@ void NscInstaller::onInstallationEnd(MOBase::IPluginInstaller::EInstallResult re
   for (const QString& n : nested) {
     logLine(QStringLiteral("  installation: nested ") + n);
   }
-  if (!nested.isEmpty()) {
-    const QStringList acts = nsc::Layout::normalizeOne(modDir, backup);
-    for (const QString& a : acts.mid(0, 12)) {
-      logLine(QStringLiteral("  installation: layout ") + a);
-    }
+  // 【2026-11-22 修复】无条件做布局归一化。
+  // 之前只在 nested 非空时剥壳 —— 但「头文件夹已解包、mod 根只剩一个
+  // <头文件夹>/」的情况没有归档可展开，nested 为空，剥壳被跳过，
+  // dirLooksLikeNscPackage 认不出 → 既不剥壳也不编译（日志显示
+  // "installation: nested ..." 后直接 "skip (not an NSC package)"，无 layout 动作）。
+  // 现在无论有没有 nested 都跑一次 normalizeOne：它会剥掉单一头文件夹、
+  // 折叠重复目录、归位散落 xfbin，是幂等的。
+  const QStringList acts = nsc::Layout::normalizeOne(modDir, backup);
+  for (const QString& a : acts.mid(0, 12)) {
+    logLine(QStringLiteral("  installation: layout ") + a);
+  }
+  if (!acts.isEmpty() || !nested.isEmpty()) {
     // 让新展开出来的文件立刻在 MO2 里可见（vfs/冲突视图依赖这层刷新）。
     if (m_Organizer) {
       m_Organizer->refresh(false);
