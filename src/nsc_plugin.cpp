@@ -1,18 +1,24 @@
-// nsc_plugin.cpp — NSC Installer & Compiler (pure C++ MO2 plugin, uibase v2.5.2 SDK)
+// nsc_plugin.cpp — MO2 主导的 NSC 安装器 / 编译器 (uibase v2.5.2 SDK)
 //
-// 设计要点：
+// MO2 是唯一管理器，本插件让它具备超越独立 NSC 管理器的能力：
 //   * 解包 / 布局归一化 / 嵌套展开 / VFS 目录预建全部由原生 C++ 模块完成
 //     （nsc_arc + nsc_layout + nsc_prepare），复用 MO2 自带的 7z.dll，零 Python、
 //     零子进程。这些是安装/启动路径上每次都跑的活。
-//   * 唯一还需要 Python 的是「调官方 .NET 编译器合并全局表」——它依赖外部工具链
-//     NscCompileHost.exe / FastCpk，不属于纯文件操作，保留 nsc_tables.py。
+//   * 编译由一个统一后端完成（DLL 是唯一调度者，绝不拉起第二个 MO2 实例 ——
+//     那才是旧版"安装并编译闪退"的根因）：
+//     onAboutToRun / onInstallationEnd → nsc_compile_all.py：
+//       收集当前全部启用 NSC mod → 一次性编译出完整的 4 个 CPK
+//       （含带新角色名册的 param_files.cpk）→ 把同一套完整产物分别部署进
+//       每个启用 mod 自己的 moddingapi/mods/<mod名>/。
+//       启用组合变化时指纹变化 → 重编 → 重新分发，天然"随启用 mod 写入"。
+//       每个 mod 自带完整产物 = "谁编译放进谁"，禁用即取消 VFS 映射、不写真身。
+//     编译算法来自开源项目 TheLeonX/NSC-ModManager，由官方
+//     NscCompileHost.exe → NSC_ModManager.dll 执行；Python 仅作编排胶水，
+//     DLL 通过 compile_all_report.json 校验结果并记日志。宿主重编走云端 CI。
 //   * 不链接、不编整套 uibase：只把 versioninfo.cpp 编成极小静态库链进来，运行时直接
 //     复用 MO2 自带的 uibase.dll 接口（ABI 同版本，纯虚接口只通过指针虚调用，不会
 //     产生第二份 uibase.dll，也不会污染其他游戏）。
 //   * 隔离：只在 NARUTO X BORUTO / Storm Connections / NSC 游戏实例认领与操作。
-//   * 编译触发挂在 onAboutToRun（启动游戏前、MO2 完全空闲），彻底避开安装期竞争
-//     —— 这正是此前 Python 安装器「安装并编译时闪退」的根因（它用 sys.executable
-//     拉起了第二个 MO2 实例抢 usvfs）。
 
 #include "nsc_plugin.h"
 
@@ -21,6 +27,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QStringList>
@@ -425,29 +433,29 @@ bool NscInstaller::compileModInPlace(const QString& modDir)
   const QString python = resolvePython(m_Organizer);
   const QString toolchain =
       resolveToolchainDir(m_Organizer, m_Organizer->basePath());
-  // 安装期成品化：识别是否需要编译，需要则当场编译，把资产 CPK 放进该 mod
-  // 自己的 moddingapi/mods/<mod名>/；全局名册表留给启动期共享编译。
-  // 旧 nsc_mod_build.py 已废弃（main 是 no-op），改用 nsc_install_build.py。
-  const QString buildScript = toolchain + QStringLiteral("/nsc_install_build.py");
+  // 统一编译后端：新装 mod 可能引入新角色，名册是全局表，必须全量重编。
+  // 这样每个 mod 拿到的 param_files.cpk 都含全部新角色，避免"装了却选不到/闪退"。
+  // 完整 4 CPK 由后端部署进各启用 mod 自己的 moddingapi/mods/<mod名>/。
+  const QString buildScript = toolchain + QStringLiteral("/nsc_compile_all.py");
   if (!QFileInfo(buildScript).isFile()) {
     logLine(QStringLiteral("build script not found: ") + buildScript);
     return false;
   }
 
   QStringList bargs;
-  bargs << buildScript << modDir
+  bargs << buildScript
         << QStringLiteral("--base") << m_Organizer->basePath()
         << QStringLiteral("--profile") << m_Organizer->profileName()
         << QStringLiteral("--game") << gameShort();
   logLine(QStringLiteral("compile: %1 %2").arg(python, bargs.join(QLatin1Char(' '))));
   const int brc = QProcess::execute(python, withPython(python, bargs));
   if (brc != 0) {
-    // 编译失败不阻断安装：mod 保持原始布局，内容仍在。
-    logLine(QStringLiteral("compile failed, rc=%1 (mod left in original layout)").arg(brc));
-    qWarning() << "[NscInstaller] nsc_install_build.py failed, rc =" << brc;
+    // 编译失败不阻断安装：mod 保持原始布局，内容仍在；启动期会再兜一次。
+    logLine(QStringLiteral("compile failed, rc=%1 (retry at next launch)").arg(brc));
+    qWarning() << "[NscInstaller] nsc_compile_all.py failed, rc =" << brc;
     return false;
   }
-  logLine(QStringLiteral("compiled OK: ") + modDir);
+  logLine(QStringLiteral("compiled OK (all enabled mods -> per-mod CPK): ") + modDir);
   return true;
 }
 
@@ -504,28 +512,43 @@ void NscInstaller::runCompileBeforeRun()
   logLine(QStringLiteral("before-run: native prep done (expanded=%1 mods)")
               .arg(expanded));
 
-  // ---- 仍需 Python 的步骤：调官方 .NET 编译器合并全局表并合成 CPK。----
-  // sweep_pending 会编译还没成品的 NSC 包；compose_runtime_tables 按当前启用组合
-  // 重算总表。二者依赖外部工具链 NscCompileHost.exe / FastCpk，非纯文件操作。
+  // ---- 统一编译后端：全部启用 mod 一次编译，完整 4 CPK 分别落进各 mod。----
+  // DLL 是唯一调度者。nsc_compile_all.py 收集启用组合、调开源编译器内核
+  // （NscCompileHost.exe → NSC_ModManager.dll），把含新角色名册的 param_files.cpk
+  // 连同 3 个资产 CPK 一起部署进每个 mod 自己的 moddingapi/mods/<mod名>/。
   const QString python = resolvePython(m_Organizer);
   const QString toolchain = resolveToolchainDir(m_Organizer, base);
-  const QString script = toolchain + QStringLiteral("/nsc_vfs_prepare.py");
+  const QString script = toolchain + QStringLiteral("/nsc_compile_all.py");
   if (!QFileInfo(script).exists()) {
-    qWarning() << "[NscInstaller] compile script not found:" << script;
+    qWarning() << "[NscInstaller] unified compile script not found:" << script;
+    logLine(QStringLiteral("before-run: compile script missing: ") + script);
     return;
   }
-  // 脚本里的展开/布局因原生步骤 1&2 已经跑过而变成空操作（幂等），这里真正要它做的是
-  // sweep_pending（编译新包）+ compose_runtime_tables（重算总表）。
   QStringList args;
   args << script << QStringLiteral("--base") << base
        << QStringLiteral("--profile") << profile
        << QStringLiteral("--game") << game;
-  if (!root.isEmpty()) {
-    args << QStringLiteral("--game-root") << root;
-  }
-  logLine(QStringLiteral("before-run: compile+compose via toolchain"));
+  logLine(QStringLiteral("before-run: unified compile (all enabled mods -> per-mod CPK)"));
   const int rc = QProcess::execute(python, withPython(python, args));
-  logLine(QStringLiteral("before-run: finished, rc=%1").arg(rc));
+  // 读结果报告（DLL 层校验，不只看 returncode）。
+  const QString report = toolchain + QStringLiteral("/compile_all_report.json");
+  QString status = QStringLiteral("unknown");
+  if (QFileInfo(report).exists()) {
+    QFile f(report);
+    if (f.open(QIODevice::ReadOnly)) {
+      const QByteArray raw = f.readAll();
+      const QJsonDocument doc = QJsonDocument::fromJson(raw);
+      if (doc.isObject()) {
+        status = doc.object().value(QStringLiteral("status")).toString(QStringLiteral("unknown"));
+        const QString detail = doc.object().value(QStringLiteral("detail")).toString();
+        logLine(QStringLiteral("before-run: compile status=%1 detail=%2").arg(status, detail));
+      }
+    }
+  }
+  logLine(QStringLiteral("before-run: finished, rc=%1 status=%2").arg(rc).arg(status));
+  if (status == QStringLiteral("failed") || status == QStringLiteral("error")) {
+    qWarning() << "[NscInstaller] unified compile reported" << status;
+  }
 }
 
 QString NscInstaller::gameRootPath() const
