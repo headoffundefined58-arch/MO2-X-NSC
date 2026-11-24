@@ -529,6 +529,15 @@ Result fixEnabledMods(const QString& basePath, const QString& profile,
     }
   }
 
+  // 如果 override 表已由官方 NSC 编译器 ViewModel 生成（外部合并器写入标记），
+  // 本 DLL 不再二次合并覆盖 —— 只保留上面的遮蔽步骤即可。
+  // 需要重新用内置合并器时，删除该标记文件。
+  const QString officialMark =
+      basePath + QStringLiteral("/overwrite/.nsc_official_tables");
+  if (QFileInfo::exists(officialMark)) {
+    return res;
+  }
+
   // ---- 步骤 2：收集碎片（从已遮蔽或未遮蔽的 data 目录都读） ----
   const QString target = QStringLiteral("characterSelectParam.xfbin");
   std::vector<QString> fragPaths;
