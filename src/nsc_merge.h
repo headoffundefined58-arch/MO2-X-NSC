@@ -28,12 +28,17 @@ namespace Merge {
  */
 
 struct Result {
-  int shadowedDirs = 0;     ///< 本次新遮蔽的工作区 data 目录数
-  int fragmentsMerged = 0;  ///< 合并进整表的碎片数
-  int recordsAdded = 0;     ///< 新增的角色记录数
-  int recordsTotal = 0;     ///< 合并后整表的总记录数
-  QString finalTable;       ///< 写出的整表路径
-  QStringList errors;       ///< 非致命错误（单个碎片解析失败等）
+  int shadowedDirs = 0;       ///< 本次新遮蔽的工作区 data 目录数
+  int fragmentsMerged = 0;    ///< 合并进整表的碎片数
+  int recordsAdded = 0;       ///< 新增的角色记录数
+  int recordsTotal = 0;       ///< 合并后整表的总记录数
+  int fragmentCandidates = 0; ///< 找到的碎片候选数
+  int fragmentRejected = 0;   ///< 解析失败/被排除的碎片数
+  int fragmentDuplicates = 0; ///< 角色码已在基底中而跳过的记录数
+  int baseRecords = 0;        ///< 实际基底表记录数
+  QString baseSource;         ///< 实际基底表来源路径
+  QString finalTable;         ///< 写出的整表路径
+  QStringList errors;         ///< 非致命错误（单个碎片解析失败等）
 };
 
 /**
@@ -48,7 +53,8 @@ Result fixEnabledMods(const QString& basePath, const QString& profile,
 
 /**
  * 从启用 mod 中挑选一份最完整的 characterSelectParam.xfbin 作为基底。
- * 判据：记录数最多、且通过 Roster 自检。找不到返回空。
+ * 判据：记录数 >= 100（完整表 345 条，碎片只有 1~4 条）、通过 Roster 自检、
+ * 且记录数最多。找不到返回空，由 fixEnabledMods 走 mod-tools 兜底基底。
  */
 QString findBestBaseTable(const QString& basePath, const QString& profile);
 
