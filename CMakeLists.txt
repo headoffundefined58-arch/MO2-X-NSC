@@ -39,7 +39,9 @@ add_library(nsc_plugin MODULE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_layout.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_layout.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_prepare.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_prepare.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_prepare.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_merge.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nsc_merge.cpp")
 target_include_directories(nsc_plugin PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/uibase/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/uibase/src/game_features"
