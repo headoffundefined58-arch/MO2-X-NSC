@@ -360,6 +360,13 @@ void NscInstaller::runCompileBeforeRun()
               .arg(merge.fragmentsMerged)
               .arg(merge.recordsTotal - merge.recordsAdded)
               .arg(merge.recordsTotal));
+  logLine(QStringLiteral("  tables: base=%1 (%2 records), candidates=%3, "
+                         "rejected=%4, duplicates=%5")
+              .arg(merge.baseSource)
+              .arg(merge.baseRecords)
+              .arg(merge.fragmentCandidates)
+              .arg(merge.fragmentRejected)
+              .arg(merge.fragmentDuplicates));
   if (!merge.finalTable.isEmpty()) {
     logLine(QStringLiteral("  tables: wrote ") + merge.finalTable);
   }
