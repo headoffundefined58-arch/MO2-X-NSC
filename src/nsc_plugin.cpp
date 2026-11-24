@@ -24,6 +24,7 @@
 #include "nsc_arc.h"
 #include "nsc_layout.h"
 #include "nsc_prepare.h"
+#include "nsc_merge.h"
 #include "versioninfo.h"
 
 namespace {
@@ -344,12 +345,35 @@ void NscInstaller::runCompileBeforeRun()
     }
   }
 
+  // ---- 原生步骤 3：修复全局参数表 ----
+  // NSC 社区 mod 把编译器工作区原样打包，Characters/<id>/data 与 Models/<id>/data
+  // 下是几百字节的参数表碎片。MO2 的 layout_markers 含 "data"，VFS 会把这些碎片
+  // 铺成游戏的 data/ui/max/select/characterSelectParam.xfbin 等整表，覆盖原版
+  // 几十 KB 的完整表 → 引擎 memcpy 越界 → 选人界面/进场闪退。
+  // 修复：遮蔽工作区 data 目录 + 把碎片合并进完整基底表写到 overwrite。
+  // 全程只在 MO2 实例内部读写，游戏物理根零写入。
+  const nsc::Merge::Result merge = nsc::Merge::fixEnabledMods(
+      base, profile, layoutBackupRoot());
+  logLine(QStringLiteral("  tables: shadowed=%1 dirs, merged=%2 fragments, "
+                         "records %3 -> %4")
+              .arg(merge.shadowedDirs)
+              .arg(merge.fragmentsMerged)
+              .arg(merge.recordsTotal - merge.recordsAdded)
+              .arg(merge.recordsTotal));
+  if (!merge.finalTable.isEmpty()) {
+    logLine(QStringLiteral("  tables: wrote ") + merge.finalTable);
+  }
+  for (const QString& e : merge.errors.mid(0, 8)) {
+    logLine(QStringLiteral("  tables: WARN ") + e);
+  }
+
   // 注意：绝不在游戏物理根建任何目录。MO2 的 VFS 在进程内虚拟出 data_win32，
   // 游戏根保持干净（data / data_dlc 之外的目录一律不创建）。
   logLine(QStringLiteral("before-run: native prep done (expanded=%1 mods)")
               .arg(expanded));
 
-  logLine(QStringLiteral("before-run: finished (VFS-only, no compile, no physical dirs)"));
+  logLine(QStringLiteral("before-run: finished (VFS + in-DLL table merge, "
+                         "no physical dirs)"));
 }
 
 QString NscInstaller::layoutBackupRoot() const
