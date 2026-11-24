@@ -41,6 +41,11 @@ constexpr int STR_HDR = 0x20;
 constexpr int TRAILER = 20;
 constexpr int ALIGN = 8;
 
+// 完整 NUCC 选人表有几百条记录；编译器工作区碎片只有 1~4 条。
+// 没有这个门槛时，碎片会被误选成基底，再把 4 条记录写进 overwrite，
+// 游戏选人界面按整表解析就越界闪退。
+constexpr int MIN_BASE_RECORDS = 100;
+
 constexpr int F_ACTIVE = 16;
 constexpr int F_PAGE = 24;
 constexpr int F_DATA = 32;
@@ -439,6 +444,9 @@ QStringList findFilesRecursive(const QString& dir, const QString& fileName)
 // ---------------------------------------------------------------------------
 QString findBestBaseTable(const QString& basePath, const QString& profile)
 {
+  // 注意：只接受完整表。碎片（1~4 条记录）绝不能当基底，
+  // 否则会把碎片自己的记录当作“已占用”而全部去重掉，写出残缺选人表。
+
   const QString modlist = basePath + QStringLiteral("/profiles/") + profile +
                           QStringLiteral("/modlist.txt");
   QFile f(modlist);
@@ -458,6 +466,9 @@ QString findBestBaseTable(const QString& basePath, const QString& profile)
     }
     const QString modDir = basePath + QStringLiteral("/mods/") + line.mid(1).trimmed();
     for (const QString& path : findFilesRecursive(modDir, target)) {
+      if (path.contains(QStringLiteral(".nsc_shadowed"))) {
+        continue;  // 工作区碎片不是基底候选
+      }
       QFile tf(path);
       if (!tf.open(QIODevice::ReadOnly)) {
         continue;
@@ -466,7 +477,9 @@ QString findBestBaseTable(const QString& basePath, const QString& profile)
       tf.close();
       BaseTable bt;
       QString err;
-      if (parseBase(b, bt, &err) && bt.count > bestCount) {
+      if (parseBase(b, bt, &err) &&
+          static_cast<int>(bt.count) >= MIN_BASE_RECORDS &&
+          bt.count > bestCount) {
         bestCount = bt.count;
         best = path;
       }
@@ -526,6 +539,7 @@ Result fixEnabledMods(const QString& basePath, const QString& profile,
       QFileInfo fi(path);
       if (fi.size() > 0 && fi.size() < 10240) {
         fragPaths.push_back(path);
+        ++res.fragmentCandidates;
       }
     }
   }
@@ -555,6 +569,7 @@ Result fixEnabledMods(const QString& basePath, const QString& profile,
         QString e;
         if (!b.isEmpty() && parseBase(b, bt, &e)) {
           baseRaw = b;
+          baseTablePath = fb;  // 记录真实基底来源，便于日志核对
           break;
         }
       }
@@ -570,19 +585,31 @@ Result fixEnabledMods(const QString& basePath, const QString& profile,
     res.errors.append(QStringLiteral("base table invalid: ") + baseErr);
     return res;
   }
+  res.baseRecords = static_cast<int>(base.count);
+  res.baseSource = baseTablePath.isEmpty() ? QStringLiteral("unknown")
+                                           : baseTablePath;
 
   std::set<QByteArray> codes = occupiedCodes(base);
   std::vector<FragRecord> additions;
+  const QString canonicalBase = QDir::fromNativeSeparators(baseTablePath);
   for (const QString& fp : fragPaths) {
+    // 基底本身绝不能再当作待合并碎片，否则它的记录会全部被去重掉。
+    if (!canonicalBase.isEmpty() &&
+        QDir::fromNativeSeparators(fp) == canonicalBase) {
+      ++res.fragmentRejected;
+      continue;
+    }
     ParsedFrag parsed;
     QString err;
     if (!parseFragment(fp, parsed, &err)) {
+      ++res.fragmentRejected;
       res.errors.append(QFileInfo(fp).fileName() + QStringLiteral(": ") + err);
       continue;
     }
     for (FragRecord& fr : parsed.records) {
       // 用第一串（角色码）去重
       if (!fr.strings.empty() && codes.count(fr.strings[0])) {
+        ++res.fragmentDuplicates;
         continue;
       }
       if (!fr.strings.empty()) {
