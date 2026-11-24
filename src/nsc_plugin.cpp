@@ -1,24 +1,14 @@
-// nsc_plugin.cpp — MO2 主导的 NSC 安装器 / 编译器 (uibase v2.5.2 SDK)
+// nsc_plugin.cpp — MO2 主导的 NSC 安装器（纯 C++，零 Python，零物理写入）
 //
-// MO2 是唯一管理器，本插件让它具备超越独立 NSC 管理器的能力：
-//   * 解包 / 布局归一化 / 嵌套展开 / VFS 目录预建全部由原生 C++ 模块完成
-//     （nsc_arc + nsc_layout + nsc_prepare），复用 MO2 自带的 7z.dll，零 Python、
-//     零子进程。这些是安装/启动路径上每次都跑的活。
-//   * 编译由一个统一后端完成（DLL 是唯一调度者，绝不拉起第二个 MO2 实例 ——
-//     那才是旧版"安装并编译闪退"的根因）：
-//     onAboutToRun / onInstallationEnd → nsc_compile_all.py：
-//       收集当前全部启用 NSC mod → 一次性编译出完整的 4 个 CPK
-//       （含带新角色名册的 param_files.cpk）→ 把同一套完整产物分别部署进
-//       每个启用 mod 自己的 moddingapi/mods/<mod名>/。
-//       启用组合变化时指纹变化 → 重编 → 重新分发，天然"随启用 mod 写入"。
-//       每个 mod 自带完整产物 = "谁编译放进谁"，禁用即取消 VFS 映射、不写真身。
-//     编译算法来自开源项目 TheLeonX/NSC-ModManager，由官方
-//     NscCompileHost.exe → NSC_ModManager.dll 执行；Python 仅作编排胶水，
-//     DLL 通过 compile_all_report.json 校验结果并记日志。宿主重编走云端 CI。
-//   * 不链接、不编整套 uibase：只把 versioninfo.cpp 编成极小静态库链进来，运行时直接
-//     复用 MO2 自带的 uibase.dll 接口（ABI 同版本，纯虚接口只通过指针虚调用，不会
-//     产生第二份 uibase.dll，也不会污染其他游戏）。
-//   * 隔离：只在 NARUTO X BORUTO / Storm Connections / NSC 游戏实例认领与操作。
+// MO2 是唯一管理器。插件只做安装期的事：
+//   * 认领 .nsc/.ensc/.uns/.unse/.nus4，原生 7z 解包 + 布局归一化 + 嵌套展开。
+//   * 全部内容经 MO2 的 VFSContentLayout 在进程内虚拟成 data_win32，
+//     游戏物理根永不写入任何目录/文件（data / data_dlc 之外一律不创建）。
+//   * 不编译 CPK、不拉 Python 子进程、不写 moddingapi、不写 overwrite。
+//     本游戏的 mod 是 Resources/Files/data/... 散文件，靠 VFS 路由表直接可读。
+//
+// 不链接整套 uibase：versioninfo.cpp 编成极小静态库，运行时复用 MO2 自带 uibase.dll。
+// 隔离：只在 NARUTO X BORUTO / Storm Connections / NSC 实例认领与操作。
 
 #include "nsc_plugin.h"
 
@@ -27,10 +17,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QProcess>
-#include <QStandardPaths>
 #include <QStringList>
 #include <QTextStream>
 #include <QDebug>
@@ -46,107 +32,6 @@ namespace {
 const QStringList kNscExtensions = {
     QStringLiteral("nsc"),  QStringLiteral("ensc"), QStringLiteral("uns"),
     QStringLiteral("unse"), QStringLiteral("nus4")};
-
-// 解析 Python 解释器路径。优先级：插件设置 > PATH(python/python3) > WorkBuddy 自带 >
-// py.exe。返回可执行文件路径（若是 py.exe，调用方需自行补 "-3"）。
-QString resolvePython(const MOBase::IOrganizer* organizer)
-{
-  if (organizer) {
-    QVariant v = organizer->pluginSetting(QStringLiteral("NscInstaller"),
-                                         QStringLiteral("pythonPath"));
-    if (v.isValid() && !v.toString().isEmpty() &&
-        QFileInfo(v.toString()).exists()) {
-      return v.toString();
-    }
-  }
-
-  for (const QString& cand :
-       {QStringLiteral("python"), QStringLiteral("python3")}) {
-    QString found = QStandardPaths::findExecutable(cand);
-    if (!found.isEmpty()) {
-      return found;
-    }
-  }
-
-  // WorkBuddy 自带 Python（本机路径，作为后备）。
-  QString wb = QStringLiteral(
-      "C:/Users/Icarus/.workbuddy/binaries/python/versions/3.13.12/python.exe");
-  if (QFileInfo(wb).exists()) {
-    return wb;
-  }
-
-  QString py = QStandardPaths::findExecutable(QStringLiteral("py"));
-  if (!py.isEmpty()) {
-    return py;
-  }
-  return QStringLiteral("python");
-}
-
-// 解析 Python 工具链目录（nsc_unpack.py / nsc_to_datawin32.py 所在）。
-// 优先级：插件设置 > <实例根>/../mod-tools/nsc-mo2 > <MO2>/plugins/nsc_tools。
-QString resolveToolchainDir(const MOBase::IOrganizer* organizer,
-                            const QString& basePath)
-{
-  if (organizer) {
-    QVariant v = organizer->pluginSetting(QStringLiteral("NscInstaller"),
-                                         QStringLiteral("toolchainDir"));
-    if (v.isValid() && !v.toString().isEmpty() &&
-        QFileInfo(v.toString()).isDir()) {
-      return v.toString();
-    }
-  }
-
-  // 默认：实例根的上一级里的 mod-tools/nsc-mo2（与本机布局一致）。
-  QDir baseDir(basePath);
-  if (baseDir.cdUp()) {
-    QString candidate = baseDir.filePath(QStringLiteral("mod-tools/nsc-mo2"));
-    if (QFileInfo(candidate).isDir()) {
-      return candidate;
-    }
-  }
-
-  // 备选：MO2 可执行文件所在目录里的 mod-tools/nsc-mo2（mod-tools 与 ModOrganizer.exe
-  // 同级时，即使实例目录就是 MO2 根目录也能命中，无需手动配置）。
-  QString appDirCandidate = QCoreApplication::applicationDirPath() +
-                            QStringLiteral("/mod-tools/nsc-mo2");
-  if (QFileInfo(appDirCandidate).isDir()) {
-    return appDirCandidate;
-  }
-
-  // 兜底：插件旁边自带的 nsc_tools。
-  QString pluginsDir =
-      QCoreApplication::applicationDirPath() + QStringLiteral("/plugins");
-  QString fallback = pluginsDir + QStringLiteral("/nsc_tools");
-  if (QFileInfo(fallback).isDir()) {
-    return fallback;
-  }
-
-  return baseDir.filePath(QStringLiteral("mod-tools/nsc-mo2"));
-}
-
-// 给 QProcess 调用补上 py.exe 需要的 "-3"。
-QStringList withPython(const QString& python, QStringList args)
-{
-  if (QFileInfo(python).fileName().compare(QStringLiteral("py.exe"),
-                                           Qt::CaseInsensitive) == 0) {
-    args.prepend(QStringLiteral("-3"));
-  }
-  return args;
-}
-
-// 原样解包的 NSC 包形状：mod_config.ini / Characters/ / Resources/Files/ / moddingapi/
-// （服装、改色这类散装 mod 是 spc/ ui/ sound/ 布局，不需要编译，别去碰它们。）
-bool dirLooksLikeNscPackage(const QString& modDir)
-{
-  const QDir d(modDir);
-  if (!d.exists()) {
-    return false;
-  }
-  return QFileInfo(d.filePath(QStringLiteral("mod_config.ini"))).isFile()
-      || QFileInfo(d.filePath(QStringLiteral("Characters"))).isDir()
-      || QFileInfo(d.filePath(QStringLiteral("Resources/Files"))).isDir()
-      || QFileInfo(d.filePath(QStringLiteral("moddingapi"))).isDir();
-}
 
 }  // namespace
 
@@ -418,44 +303,8 @@ void NscInstaller::onInstallationEnd(MOBase::IPluginInstaller::EInstallResult re
 
 bool NscInstaller::compileModInPlace(const QString& modDir)
 {
-  if (!m_Organizer) {
-    return false;
-  }
-  if (QFileInfo(QDir(modDir).filePath(QStringLiteral(".nsc_compiled"))).isFile()) {
-    logLine(QStringLiteral("already compiled: ") + modDir);
-    return true;
-  }
-  if (!dirLooksLikeNscPackage(modDir)) {
-    logLine(QStringLiteral("skip (not an NSC package): ") + modDir);
-    return false;
-  }
-
-  const QString python = resolvePython(m_Organizer);
-  const QString toolchain =
-      resolveToolchainDir(m_Organizer, m_Organizer->basePath());
-  // 统一编译后端：新装 mod 可能引入新角色，名册是全局表，必须全量重编。
-  // 这样每个 mod 拿到的 param_files.cpk 都含全部新角色，避免"装了却选不到/闪退"。
-  // 完整 4 CPK 由后端部署进各启用 mod 自己的 moddingapi/mods/<mod名>/。
-  const QString buildScript = toolchain + QStringLiteral("/nsc_compile_all.py");
-  if (!QFileInfo(buildScript).isFile()) {
-    logLine(QStringLiteral("build script not found: ") + buildScript);
-    return false;
-  }
-
-  QStringList bargs;
-  bargs << buildScript
-        << QStringLiteral("--base") << m_Organizer->basePath()
-        << QStringLiteral("--profile") << m_Organizer->profileName()
-        << QStringLiteral("--game") << gameShort();
-  logLine(QStringLiteral("compile: %1 %2").arg(python, bargs.join(QLatin1Char(' '))));
-  const int brc = QProcess::execute(python, withPython(python, bargs));
-  if (brc != 0) {
-    // 编译失败不阻断安装：mod 保持原始布局，内容仍在；启动期会再兜一次。
-    logLine(QStringLiteral("compile failed, rc=%1 (retry at next launch)").arg(brc));
-    qWarning() << "[NscInstaller] nsc_compile_all.py failed, rc =" << brc;
-    return false;
-  }
-  logLine(QStringLiteral("compiled OK (all enabled mods -> per-mod CPK): ") + modDir);
+  // VFS 直读散文件，不再编译 CPK / 不再拉 Python 子进程。
+  Q_UNUSED(modDir);
   return true;
 }
 
@@ -495,69 +344,12 @@ void NscInstaller::runCompileBeforeRun()
     }
   }
 
-  // ---- 原生步骤 3：预建 USVFS 目标目录。----
-  // USVFS 会静默丢弃「目标目录不存在」的映射，而 mod 内容有多个类别（ui/message/
-  // sound/skill/effect/rpg/spcload…），缺一个该类映射就整体失效。
-  const QHash<QString, QString> routing = nsc::Layout::readRouting(base);
-  const QSet<QString> needed = nsc::Prepare::requiredDirs(base, profile, game, routing);
-  const QString root = gameRootPath();
-  if (root.isEmpty()) {
-    qWarning() << "[NscInstaller] game root not found, skip VFS dir prep";
-    logLine(QStringLiteral("  game root not found - VFS dir prep skipped"));
-  } else {
-    const int created = nsc::Prepare::createDirs(root, needed);
-    logLine(QStringLiteral("  vfs dirs: %1 required, %2 created (root=%3)")
-                .arg(needed.count()).arg(created).arg(root));
-  }
+  // 注意：绝不在游戏物理根建任何目录。MO2 的 VFS 在进程内虚拟出 data_win32，
+  // 游戏根保持干净（data / data_dlc 之外的目录一律不创建）。
   logLine(QStringLiteral("before-run: native prep done (expanded=%1 mods)")
               .arg(expanded));
 
-  // ---- 统一编译后端：全部启用 mod 一次编译，完整 4 CPK 分别落进各 mod。----
-  // DLL 是唯一调度者。nsc_compile_all.py 收集启用组合、调开源编译器内核
-  // （NscCompileHost.exe → NSC_ModManager.dll），把含新角色名册的 param_files.cpk
-  // 连同 3 个资产 CPK 一起部署进每个 mod 自己的 moddingapi/mods/<mod名>/。
-  const QString python = resolvePython(m_Organizer);
-  const QString toolchain = resolveToolchainDir(m_Organizer, base);
-  const QString script = toolchain + QStringLiteral("/nsc_compile_all.py");
-  if (!QFileInfo(script).exists()) {
-    qWarning() << "[NscInstaller] unified compile script not found:" << script;
-    logLine(QStringLiteral("before-run: compile script missing: ") + script);
-    return;
-  }
-  QStringList args;
-  args << script << QStringLiteral("--base") << base
-       << QStringLiteral("--profile") << profile
-       << QStringLiteral("--game") << game;
-  logLine(QStringLiteral("before-run: unified compile (all enabled mods -> per-mod CPK)"));
-  const int rc = QProcess::execute(python, withPython(python, args));
-  // 读结果报告（DLL 层校验，不只看 returncode）。
-  const QString report = toolchain + QStringLiteral("/compile_all_report.json");
-  QString status = QStringLiteral("unknown");
-  if (QFileInfo(report).exists()) {
-    QFile f(report);
-    if (f.open(QIODevice::ReadOnly)) {
-      const QByteArray raw = f.readAll();
-      const QJsonDocument doc = QJsonDocument::fromJson(raw);
-      if (doc.isObject()) {
-        status = doc.object().value(QStringLiteral("status")).toString(QStringLiteral("unknown"));
-        const QString detail = doc.object().value(QStringLiteral("detail")).toString();
-        logLine(QStringLiteral("before-run: compile status=%1 detail=%2").arg(status, detail));
-      }
-    }
-  }
-  logLine(QStringLiteral("before-run: finished, rc=%1 status=%2").arg(rc).arg(status));
-  if (status == QStringLiteral("failed") || status == QStringLiteral("error")) {
-    qWarning() << "[NscInstaller] unified compile reported" << status;
-  }
-}
-
-QString NscInstaller::gameRootPath() const
-{
-  if (!m_Organizer || !m_Organizer->managedGame()) {
-    return QString();
-  }
-  const QDir dir = m_Organizer->managedGame()->gameDirectory();
-  return dir.path().isEmpty() ? QString() : dir.absolutePath();
+  logLine(QStringLiteral("before-run: finished (VFS-only, no compile, no physical dirs)"));
 }
 
 QString NscInstaller::layoutBackupRoot() const
