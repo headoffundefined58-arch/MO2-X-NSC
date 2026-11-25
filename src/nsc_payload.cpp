@@ -198,6 +198,102 @@ void mergeDir(const QString& src, const QString& dst, const QString& backupRoot,
   }
 }
 
+// 已知的内容/工作区目录名 —— 这些不是"头文件夹"，绝不能剥。
+// 统一小写存放，配合 Qt6 的 QSet::contains(小写) 使用。
+const QSet<QString>& knownContentDirs()
+{
+  static const QSet<QString> names{
+      QStringLiteral("spc"),      QStringLiteral("spcload"),
+      QStringLiteral("ui"),       QStringLiteral("sound"),
+      QStringLiteral("data"),     QStringLiteral("data_win32"),
+      QStringLiteral("resources"), QStringLiteral("files"),
+      QStringLiteral("characters"), QStringLiteral("models"),
+      QStringLiteral("message"),  QStringLiteral("duel"),
+      QStringLiteral("sim"),      QStringLiteral("system"),
+      QStringLiteral("rpg"),      QStringLiteral("flash"),
+      QStringLiteral("script"),   QStringLiteral("movie"),
+      QStringLiteral("music"),    QStringLiteral("gamedata")};
+  return names;
+}
+
+/// dir 自身或其浅层子目录里有 png（NSC 社区 add 类型模组都带 mod_icon.png）。
+bool hasPng(const QString& dir, int depth)
+{
+  if (!QFileInfo(dir).isDir()) {
+    return false;
+  }
+  if (!QDir(dir)
+           .entryList(QStringList{QStringLiteral("*.png")}, QDir::Files, QDir::Name)
+           .isEmpty()) {
+    return true;
+  }
+  if (depth <= 0) {
+    return false;
+  }
+  const QFileInfoList subs = QDir(dir).entryInfoList(
+      QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+  for (const QFileInfo& s : subs) {
+    const QString n = s.fileName().toLower();
+    if (isReserved(n) || knownContentDirs().contains(n)) {
+      continue;
+    }
+    if (hasPng(s.absoluteFilePath(), depth - 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// 判断 mod 根的一个直接子目录是不是"资产包头文件夹"：
+/// add 类型模组把整个工作区塞进一个标题名文件夹，里面带 Resources 或
+/// mod_icon.png。判据（满足其一，且名字不是已知内容目录）：
+///   1) 含 Resources/Files/data 链；
+///   2) 自身或浅层含 *.png；
+///   3) 含 Characters/Models 工作区标志。
+bool isAssetHeader(const QString& dir)
+{
+  const QString n = QFileInfo(dir).fileName().toLower();
+  if (isReserved(n) || knownContentDirs().contains(n)) {
+    return false;
+  }
+  const QString res = childDir(dir, QStringLiteral("Resources"));
+  if (!res.isEmpty()) {
+    const QString files = childDir(res, QStringLiteral("Files"));
+    if (!files.isEmpty() && !childDir(files, QStringLiteral("data")).isEmpty()) {
+      return true;
+    }
+  }
+  if (hasPng(dir, 3)) {
+    return true;
+  }
+  return !childDir(dir, QStringLiteral("Characters")).isEmpty() ||
+         !childDir(dir, QStringLiteral("Models")).isEmpty();
+}
+
+/// 把"头文件夹"内容整体并入 mod 根（按 add 类型散铺）。循环剥，兼容多层壳。
+void unwrapHeaderFolders(const QString& modDir, const QString& backupRoot,
+                         QStringList& actions)
+{
+  for (int round = 0; round < 8; ++round) {
+    QString header;
+    const QFileInfoList subs = QDir(modDir).entryInfoList(
+        QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    for (const QFileInfo& s : subs) {
+      if (isAssetHeader(s.absoluteFilePath())) {
+        header = s.absoluteFilePath();
+        break;
+      }
+    }
+    if (header.isEmpty()) {
+      break;
+    }
+    const QString rel = QDir(modDir).relativeFilePath(header);
+    actions.append(QStringLiteral("unwrap ") + rel + QStringLiteral("/ -> mod root"));
+    mergeDir(header, modDir, backupRoot + QLatin1Char('/') + rel, actions);
+    pruneEmpty(header, modDir);
+  }
+}
+
 struct AssetChain {
   QString data;
   QString targetParent;
@@ -234,6 +330,12 @@ QStringList Payload::normalizeAssets(const QString& modDir, const QString& backu
   if (!QFileInfo(modDir).isDir()) {
     return actions;
   }
+
+  // 步骤 0：先剥"资产包头文件夹"。add 类型 NSC 模组把整个工作区塞进一个
+  // 标题名文件夹（含 Resources/ 和 mod_icon.png），里面才是 Resources/Files/data。
+  // 不先剥这层，findAssetChain 只找 <mod根>/<子目录>/Files/data，会漏掉
+  // <mod根>/<头文件夹>/Resources/Files/data，模组就完全不被处理。
+  unwrapHeaderFolders(modDir, backupRoot, actions);
 
   for (int round = 0; round < 8; ++round) {
     AssetChain chain;
