@@ -80,6 +80,8 @@ private:
   /// 把单个 mod 目录就地解包+布局归一化（纯 C++，替代 nsc_unpack.py）。
   /// 返回 false 表示归档解不开。
   bool unpackMod(const QString& archiveName, const QString& modDir);
+  /// 安装后/启动前的最后一步：展平 Resources/Files/data 资源链并解密加密 NUCC。
+  void preparePayload(const QString& modDir, const QString& label);
   // 把单个 mod 目录就地编译成成品（已编译过则直接返回 true）。
   // 这是唯一还需要 Python 的一步：调官方 .NET 编译器合并全局表。
   bool compileModInPlace(const QString& modDir);

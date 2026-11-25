@@ -24,6 +24,7 @@
 #include "nsc_arc.h"
 #include "nsc_layout.h"
 #include "nsc_prepare.h"
+#include "nsc_payload.h"
 #include "nsc_merge.h"
 #include "versioninfo.h"
 
@@ -99,13 +100,14 @@ QString NscInstaller::author() const
 QString NscInstaller::description() const
 {
   return QStringLiteral(
-      "Install NSC/ENSC mods and auto-compile character/parameter merges for "
-      "NARUTO X BORUTO (Storm Connections). Only active for NSC game instances.");
+      "Install NSC/ENSC mods for NARUTO X BORUTO (Storm Connections): flatten "
+      "NSC workspace layouts, decrypt encrypted NUCC payloads, and merge global "
+      "parameter tables. Only active for NSC game instances.");
 }
 
 MOBase::VersionInfo NscInstaller::version() const
 {
-  return MOBase::VersionInfo(QStringLiteral("1.0.0"));
+  return MOBase::VersionInfo(QStringLiteral("1.1.0"));
 }
 
 QList<MOBase::PluginSetting> NscInstaller::settings() const
@@ -299,6 +301,9 @@ void NscInstaller::onInstallationEnd(MOBase::IPluginInstaller::EInstallResult re
     }
   }
 
+  // 最后一步：把 NSC 工作区路径展平成 VFS 可散读结构，并解密 NUCC payload。
+  // 这一步在 Sage Kabuto / 九尾之力上实测是「生效」与「没反应」的分界线。
+  preparePayload(modDir, QStringLiteral("install"));
   compileModInPlace(modDir);
 }
 
@@ -307,6 +312,24 @@ bool NscInstaller::compileModInPlace(const QString& modDir)
   // VFS 直读散文件，不再编译 CPK / 不再拉 Python 子进程。
   Q_UNUSED(modDir);
   return true;
+}
+
+void NscInstaller::preparePayload(const QString& modDir, const QString& label)
+{
+  const QString backup = layoutBackupRoot();
+  QStringList actions = nsc::Payload::normalizeAssets(modDir, backup);
+  const int decrypted = nsc::Payload::decryptEncrypted(modDir, backup, actions);
+  if (actions.isEmpty()) {
+    return;
+  }
+
+  logLine(QStringLiteral("  payload[%1]: %2 action(s), decrypted=%3")
+              .arg(label)
+              .arg(actions.count())
+              .arg(decrypted));
+  for (const QString& a : actions.mid(0, 12)) {
+    logLine(QStringLiteral("    ") + a);
+  }
 }
 
 void NscInstaller::runCompileBeforeRun()
@@ -344,6 +367,20 @@ void NscInstaller::runCompileBeforeRun()
       logLine(QStringLiteral("    ") + a);
     }
   }
+
+  // ---- 原生步骤 2.5：VFS 成品化兜底 ----
+  // 安装钩子没覆盖到的旧 mod（例如手动拷进来的 Sage/九尾之力）在这里补齐：
+  // 展平 Resources/Files/data，解密加密 NUCC。两者都幂等。
+  int payloadMods = 0;
+  for (const QString& name : enabled) {
+    const QString modDir = base + QStringLiteral("/mods/") + name;
+    if (!QFileInfo(modDir).isDir()) {
+      continue;
+    }
+    preparePayload(modDir, QStringLiteral("before-run"));
+    ++payloadMods;
+  }
+  logLine(QStringLiteral("  payload: checked %1 enabled mod(s)").arg(payloadMods));
 
   // ---- 原生步骤 3：修复全局参数表 ----
   // NSC 社区 mod 把编译器工作区原样打包，Characters/<id>/data 与 Models/<id>/data
@@ -411,6 +448,9 @@ bool NscInstaller::unpackMod(const QString& archiveName, const QString& modDir)
   for (const QString& a : acts.mid(0, 12)) {
     logLine(QStringLiteral("  layout: ") + a);
   }
+
+  // 3.5) VFS 成品化：展平 Resources/Files/data 链，解密加密 NUCC。
+  preparePayload(modDir, QStringLiteral("unpack"));
 
   // 4) 写元数据 nsc_mod.json（replace 类型，与原 Python 版一致）。
   const QString metaPath = modDir + QStringLiteral("/nsc_mod.json");
