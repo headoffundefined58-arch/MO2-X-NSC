@@ -1,7 +1,7 @@
 {
   "name": "NSC Installer & Compiler",
   "author": "Icarus",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Install NSC/ENSC mods for NARUTO X BORUTO (Storm Connections): flatten NSC workspace layouts, decrypt encrypted NUCC payloads, and merge global parameter tables. Only active for NSC game instances.",
   "type": "installer",
   "enabled": true
