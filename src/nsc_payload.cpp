@@ -9,6 +9,8 @@
 #include <QSet>
 #include <QtGlobal>
 
+#include <algorithm>
+
 namespace nsc {
 namespace {
 
@@ -299,27 +301,53 @@ struct AssetChain {
   QString targetParent;
 };
 
+/// 递归收集任意深度的 <...>/Resources/Files/data 资源链末端（data 目录）。
+/// 用户的判据：递归文件夹只要符合 Resources/Files/data 即视为 NSC 模组。
+/// 用祖先里出现过 Resources 作为强判据；也接受裸 <...>/Files/data（兼容旧包）。
+/// 展平目标统一由调用方定为 mod 根，与资源链埋在第几层无关。
+void collectAssetData(const QString& dir, bool underResources, int depth,
+                      QStringList& found)
+{
+  if (depth > 12) {
+    return;
+  }
+  const QString name = QFileInfo(dir).fileName().toLower();
+  bool res = underResources || name == QStringLiteral("resources");
+
+  // 命中 Files/data：把 data 的完整路径记下来。
+  if (name == QStringLiteral("files")) {
+    const QString data = childDir(dir, QStringLiteral("data"));
+    if (!data.isEmpty() &&
+        !QDir(data).entryList(QDir::NoDotAndDotDot | QDir::Hidden | QDir::System).isEmpty()) {
+      found.append(data);
+    }
+  }
+
+  const QFileInfoList subs = QDir(dir).entryInfoList(
+      QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
+  for (const QFileInfo& s : subs) {
+    const QString n = s.fileName().toLower();
+    if (isReserved(n)) {
+      continue;
+    }
+    collectAssetData(s.absoluteFilePath(), res, depth + 1, found);
+  }
+}
+
 bool findAssetChain(const QString& modDir, AssetChain& out)
 {
-  const QFileInfoList subs = QDir(modDir).entryInfoList(
-      QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
-  for (const QFileInfo& res : subs) {
-    if (isReserved(res.fileName())) {
-      continue;
-    }
-    const QString files = childDir(res.absoluteFilePath(), QStringLiteral("Files"));
-    if (files.isEmpty()) {
-      continue;
-    }
-    const QString data = childDir(files, QStringLiteral("data"));
-    if (data.isEmpty()) {
-      continue;
-    }
-    out.data = data;
-    out.targetParent = res.absolutePath();
-    return true;
+  QStringList found;
+  collectAssetData(modDir, false, 0, found);
+  if (found.isEmpty()) {
+    return false;
   }
-  return false;
+  // 按路径深度排序，先处理最浅的链。
+  std::sort(found.begin(), found.end(), [](const QString& a, const QString& b) {
+    return a.count(QLatin1Char('/')) < b.count(QLatin1Char('/'));
+  });
+  out.data = found.first();
+  out.targetParent = modDir;  // 无论埋在第几层，都散铺到 mod 根（== 游戏 data）
+  return true;
 }
 
 }  // namespace
