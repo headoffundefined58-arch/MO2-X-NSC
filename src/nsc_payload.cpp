@@ -86,7 +86,7 @@ const QSet<QString>& reservedNames()
 
 bool isReserved(const QString& name)
 {
-  return reservedNames().contains(name, Qt::CaseInsensitive);
+  return reservedNames().contains(name.toLower());
 }
 
 QString childDir(const QString& parent, const QString& wanted)
