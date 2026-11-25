@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPair>
 #include <QStringList>
 #include <QTextStream>
 #include <QResource>
@@ -111,6 +112,12 @@ QByteArray buildGroup(const std::vector<QByteArray>& strings)
 struct FragRecord {
   QByteArray record;              // 320 字节
   std::vector<QByteArray> strings; // 该记录的 NUCC 字符串组
+  // 碎片作者已经排好的选人表位置。以前全部被覆盖成 page=0/slot=0，
+  // 多个新角色叠在同一格，游戏里表现为"不生效"。必须保留并整体重映射。
+  qint32 page = -1;
+  quint32 slot = 0;
+  quint32 group = 0;
+  QString source;                 // 来自哪个碎片；跨模组 page/group 必须分开映射
 };
 
 struct ParsedFrag {
@@ -175,7 +182,12 @@ bool parseFragment(const QString& path, ParsedFrag& out, QString* err)
 
   for (quint32 r = 0; r < n; ++r) {
     FragRecord fr;
-    fr.record = b.mid(REC_START + static_cast<int>(r) * REC_SIZE, REC_SIZE);
+    const int recOff = REC_START + static_cast<int>(r) * REC_SIZE;
+    fr.record = b.mid(recOff, REC_SIZE);
+    fr.page = i32(b, recOff + F_PAGE);
+    fr.slot = u32(b, recOff + F_SLOT);
+    fr.group = u32(b, recOff + F_GROUP);
+    fr.source = path;
     const int start = rels[r];
     const int end = nextOf[start];
     const QByteArray group = data.mid(start, end - start);
@@ -248,23 +260,43 @@ bool parseBase(const QByteArray& raw, BaseTable& out, QString* err)
   return true;
 }
 
-/// 选一个未占用的 page（每页 2 条）。
-int nextFreePage(const std::vector<std::pair<int, int>>& pageSlots)
+/// 角色码家族键：前 4 字符（5obt_01 -> "5obt"，5obt00 -> "5obt"）。
+QByteArray familyKey(const QByteArray& code)
 {
-  std::map<int, std::set<int>> used;
-  for (const auto& ps : pageSlots) {
-    if (ps.first >= 0) {
-      used[ps.first].insert(ps.second);
+  return code.left(4).toLower();
+}
+
+/// 每个原版 group id 下的角色码集合，用于判断碎片是否真属于那个家族。
+std::map<quint32, std::set<QByteArray>> baseGroupCodes(const BaseTable& base)
+{
+  std::map<quint32, std::set<QByteArray>> out;
+  std::set<int> order(base.rels.begin(), base.rels.end());
+  std::map<int, int> nextOf;
+  for (auto it = order.begin(); it != order.end(); ++it) {
+    auto nx = std::next(it);
+    nextOf[*it] = (nx == order.end()) ? base.data.size() : *nx;
+  }
+  for (quint32 r = 0; r < base.count; ++r) {
+    const int start = base.rels[r];
+    const QByteArray group = base.data.mid(start, nextOf[start] - start);
+    const QList<QByteArray> toks = group.split('\0');
+    if (!toks.isEmpty() && !toks[0].isEmpty()) {
+      out[u32(base.raw, REC_START + static_cast<int>(r) * REC_SIZE + F_GROUP)]
+          .insert(familyKey(toks[0]));
     }
   }
-  int page = 0;
-  while (true) {
-    auto it = used.find(page);
-    if (it == used.end() || it->second.size() < 2) {
-      return page;
+  return out;
+}
+
+bool sharesFamily(const std::set<QByteArray>& existing,
+                  const std::vector<QByteArray>& additions)
+{
+  for (const QByteArray& code : additions) {
+    if (existing.count(familyKey(code))) {
+      return true;
     }
-    ++page;
   }
+  return false;
 }
 
 /// 核心合并：把 additions 的记录追加到基底，重建偏移/尺寸字段。
@@ -277,17 +309,40 @@ QByteArray mergeRecords(const BaseTable& base,
     records.push_back(base.raw.mid(REC_START + static_cast<int>(r) * REC_SIZE, REC_SIZE));
   }
 
-  std::vector<std::pair<int, int>> pageSlots;
-  pageSlots.reserve(base.count + additions.size());
-  for (quint32 r = 0; r < base.count; ++r) {
-    const int off = REC_START + static_cast<int>(r) * REC_SIZE;
-    pageSlots.emplace_back(i32(base.raw, off + F_PAGE),
-                           static_cast<int>(u32(base.raw, off + F_SLOT)));
-  }
+  // 碎片作者已经排好 page/slot/group，不能一律覆盖成 0/0：
+  //   9nrq00/hnrq00/cnrq00  = 同一家族的 3 个形态，slot 0/1/2
+  //   kush00..03            = 同一家族的 4 个形态，slot 0..3
+  //   5obt_01/02/03         = 原版 Obito(group 7) 的三个服装，slot 1/2/3
+  // 全改成 page=0/slot=0 会让它们叠在同一格，选人界面看不到。
+  int maxPage = -1;
   quint32 maxGroupId = 0;
   for (quint32 r = 0; r < base.count; ++r) {
     const int off = REC_START + static_cast<int>(r) * REC_SIZE;
+    maxPage = std::max(maxPage, i32(base.raw, off + F_PAGE));
     maxGroupId = std::max(maxGroupId, u32(base.raw, off + F_GROUP));
+  }
+  int nextPage = maxPage + 1;
+  // 键必须带碎片路径：多个 mod 的作者都把新角色放在 page 8，
+  // 只按原 page 映射会让所有 mod 的新角色再次叠在同一页。
+  using GroupKey = QPair<QString, quint32>;
+  using PageKey = QPair<QString, qint32>;
+  std::map<PageKey, int> pageMap;
+
+  const std::map<quint32, std::set<QByteArray>> baseGroups = baseGroupCodes(base);
+  std::map<GroupKey, std::vector<QByteArray>> addCodesByGroup;
+  for (const FragRecord& add : additions) {
+    if (!add.strings.empty()) {
+      addCodesByGroup[GroupKey(add.source, add.group)].push_back(add.strings[0]);
+    }
+  }
+  std::map<GroupKey, quint32> groupMap;
+  for (const auto& kv : addCodesByGroup) {
+    auto it = baseGroups.find(kv.first.second);
+    if (it != baseGroups.end() && sharesFamily(it->second, kv.second)) {
+      groupMap[kv.first] = kv.first.second;  // 例：5obt_01/02/03 归入原版 Obito 家族
+    } else {
+      groupMap[kv.first] = ++maxGroupId;
+    }
   }
 
   std::vector<QByteArray> groups;  // 只放新追加的组
@@ -296,12 +351,28 @@ QByteArray mergeRecords(const BaseTable& base,
     if (rec.size() < REC_SIZE) {
       rec.append(QByteArray(REC_SIZE - rec.size(), '\0'));
     }
-    const int page = nextFreePage(pageSlots);
-    const int slot = 0;
-    pageSlots.emplace_back(page, slot);
+
+    int page = add.page;
+    if (page >= 0) {
+      const PageKey key(add.source, add.page);
+      auto pit = pageMap.find(key);
+      if (pit == pageMap.end()) {
+        pit = pageMap.emplace(key, nextPage++).first;
+      }
+      page = pit->second;
+    }
+    quint32 group = maxGroupId;
+    const GroupKey gkey(add.source, add.group);
+    auto git = groupMap.find(gkey);
+    if (git != groupMap.end()) {
+      group = git->second;
+    } else {
+      group = ++maxGroupId;
+    }
+
     put32(rec, F_PAGE, static_cast<quint32>(page));
-    put32(rec, F_SLOT, static_cast<quint32>(slot));
-    put32(rec, F_GROUP, ++maxGroupId);
+    put32(rec, F_SLOT, add.slot);
+    put32(rec, F_GROUP, group);
     records.push_back(rec);
     QByteArray g = buildGroup(add.strings);
     if (g.isEmpty()) {

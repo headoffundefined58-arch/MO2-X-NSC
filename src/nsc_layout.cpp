@@ -294,8 +294,13 @@ int stripWrapper(const QString& modDir, const QString& stashDir,
         }
         chain = next;
       }
+      // 必须带 Dirs|Files：只给 NoDotAndDotDot|Hidden 时 Qt 返回空列表，
+      // 于是 Resources/Files/data 被当成空壳，资产包永远不剥。
       if (complete &&
-          !QDir(chain).entryList(QDir::NoDotAndDotDot | QDir::Hidden).isEmpty()) {
+          !QDir(chain)
+               .entryList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot |
+                          QDir::Hidden)
+               .isEmpty()) {
         candidate = chain;
       }
     }
@@ -306,7 +311,10 @@ int stripWrapper(const QString& modDir, const QString& stashDir,
       // 不到「xxx/data_win32/」这种包壳，这里递归兜底。
       const QString nested = findDataWin32Wrapper(modDir);
       if (!nested.isEmpty() &&
-          !QDir(nested).entryList(QDir::NoDotAndDotDot | QDir::Hidden).isEmpty()) {
+          !QDir(nested)
+               .entryList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot |
+                          QDir::Hidden)
+               .isEmpty()) {
         candidate = nested;
       }
     }
@@ -333,7 +341,10 @@ int stripWrapper(const QString& modDir, const QString& stashDir,
     if (candidate.isEmpty()) {
       break;
     }
-    if (QDir(candidate).entryList(QDir::NoDotAndDotDot | QDir::Hidden).isEmpty()) {
+    if (QDir(candidate)
+            .entryList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot |
+                       QDir::Hidden)
+            .isEmpty()) {
       break;  // 空壳不动
     }
 

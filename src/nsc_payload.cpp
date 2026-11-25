@@ -105,8 +105,12 @@ QString childDir(const QString& parent, const QString& wanted)
 
 bool dirIsEmpty(const QString& dir)
 {
+  // Qt 的 entryList 若不带 Dirs/Files 类型位，返回的是空列表而不是"全部条目"。
+  // 少了这两位会让所有非空目录被误判为空 —— Resources/Files/data 因此永远
+  // 不会被展平（日志里只有 decrypt、没有 flatten），必须带上。
   return QDir(dir)
-      .entryList(QDir::NoDotAndDotDot | QDir::Hidden | QDir::System)
+      .entryList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot |
+                 QDir::Hidden | QDir::System)
       .isEmpty();
 }
 
@@ -318,7 +322,10 @@ void collectAssetData(const QString& dir, bool underResources, int depth,
   if (name == QStringLiteral("files")) {
     const QString data = childDir(dir, QStringLiteral("data"));
     if (!data.isEmpty() &&
-        !QDir(data).entryList(QDir::NoDotAndDotDot | QDir::Hidden | QDir::System).isEmpty()) {
+        !QDir(data)
+             .entryList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot |
+                        QDir::Hidden | QDir::System)
+             .isEmpty()) {
       found.append(data);
     }
   }
