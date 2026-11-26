@@ -21,8 +21,10 @@ namespace Merge {
  *      让 VFS 再也看不到碎片；资产目录 Resources/Files/data 不动。
  *   2. 用已验证的字节级 Roster 算法，把每个碎片里的新角色记录合并进一份
  *      完整基底表（345 条记录 / 121KB）。
- *   3. 合并后的整表写到 <实例>/overwrite/ui/max/select/characterSelectParam.xfbin
- *      —— overwrite 是 VFS 里优先级最高的虚拟 mod，游戏只读这一份完整表。
+ *   3. 合并后的整表写回本地化模组 <实例>/mods/忍者与舞台中文本地化/
+ *      ui/max/select/characterSelectParam.xfbin —— 绝不写 overwrite（用户约束：
+ *      overwrite 必须全空）。服装碎片（group 命中原版家族）以 page=-1 隐藏槽
+ *      挂进原角色时装列表，不再是 p163+ 独立新页。
  *
  * 所有操作幂等：重复调用不会重复追加记录，也不会破坏已遮蔽的目录。
  */

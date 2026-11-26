@@ -107,7 +107,7 @@ QString NscInstaller::description() const
 
 MOBase::VersionInfo NscInstaller::version() const
 {
-  return MOBase::VersionInfo(QStringLiteral("1.2.2"));
+  return MOBase::VersionInfo(QStringLiteral("1.3.0"));
 }
 
 QList<MOBase::PluginSetting> NscInstaller::settings() const

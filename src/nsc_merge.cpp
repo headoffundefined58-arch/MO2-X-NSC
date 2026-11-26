@@ -352,8 +352,21 @@ QByteArray mergeRecords(const BaseTable& base,
       rec.append(QByteArray(REC_SIZE - rec.size(), '\0'));
     }
 
+    // 判断这条碎片属于「原角色的新服装」还是「全新角色」。
+    // groupMap 命中原版 group id（值 <= 基底最大 group）说明是原角色家族的服装：
+    //   2tnd_01/5obt_01-03 等，应作为原角色的隐藏服装槽(page=-1)，
+    //   靠 group_id 归到纲手/带土，绝不能放成 p163+ 独立新页（那会让服装
+    //   变成独立角色、在原角色时装列表里看不到，且占用大量空白页）。
+    const GroupKey gkey(add.source, add.group);
+    auto git = groupMap.find(gkey);
+    const bool isCostumeOfBase =
+        (git != groupMap.end() &&
+         baseGroups.find(git->second) != baseGroups.end());
+
     int page = add.page;
-    if (page >= 0) {
+    if (isCostumeOfBase) {
+      page = -1;  // 隐藏槽：挂进原角色时装列表，而非独立选人页
+    } else if (page >= 0) {
       const PageKey key(add.source, add.page);
       auto pit = pageMap.find(key);
       if (pit == pageMap.end()) {
@@ -362,8 +375,6 @@ QByteArray mergeRecords(const BaseTable& base,
       page = pit->second;
     }
     quint32 group = maxGroupId;
-    const GroupKey gkey(add.source, add.group);
-    auto git = groupMap.find(gkey);
     if (git != groupMap.end()) {
       group = git->second;
     } else {
@@ -704,9 +715,13 @@ Result fixEnabledMods(const QString& basePath, const QString& profile,
   res.recordsAdded = static_cast<int>(additions.size());
   res.recordsTotal = static_cast<int>(u32(merged, COUNT_OFF));
 
-  // ---- 步骤 4：写到 overwrite（VFS 最高优先级） ----
-  const QString outPath = basePath + QStringLiteral("/overwrite/ui/max/select/") +
-                          target;
+  // ---- 步骤 4：写回名册模组（不再写 overwrite） ----
+  // 用户约束：overwrite 必须保持全空；名册固定写回本地化模组。
+  // 基底可以从任意启用模组或 mod-tools pristine 读取，但输出目标唯一，
+  // 保证「名册从本地化模组做」且不再产生 overwrite 文件。
+  const QString rosterMod = QStringLiteral("忍者与舞台中文本地化");
+  const QString outPath = basePath + QStringLiteral("/mods/") + rosterMod +
+                          QStringLiteral("/ui/max/select/") + target;
   QDir().mkpath(QFileInfo(outPath).absolutePath());
   QFile out(outPath);
   if (!out.open(QIODevice::WriteOnly)) {
